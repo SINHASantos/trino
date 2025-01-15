@@ -13,6 +13,7 @@
  */
 package io.trino.connector;
 
+import com.google.common.collect.ImmutableList;
 import io.trino.FullConnectorSession;
 import io.trino.Session;
 import io.trino.metadata.MaterializedViewDefinition;
@@ -54,17 +55,17 @@ public class InternalMetadataProvider
 
         Optional<MaterializedViewDefinition> materializedView = metadata.getMaterializedView(session, qualifiedName);
         if (materializedView.isPresent()) {
-            return Optional.of(new ConnectorTableSchema(tableName.getSchemaTableName(), toColumnSchema(materializedView.get().getColumns())));
+            return Optional.of(new ConnectorTableSchema(tableName.getSchemaTableName(), toColumnSchema(materializedView.get().getColumns()), ImmutableList.of()));
         }
 
         Optional<ViewDefinition> view = metadata.getView(session, qualifiedName);
         if (view.isPresent()) {
-            return Optional.of(new ConnectorTableSchema(tableName.getSchemaTableName(), toColumnSchema(view.get().getColumns())));
+            return Optional.of(new ConnectorTableSchema(tableName.getSchemaTableName(), toColumnSchema(view.get().getColumns()), ImmutableList.of()));
         }
 
         Optional<TableHandle> tableHandle = metadata.getTableHandle(session, qualifiedName);
         if (tableHandle.isPresent()) {
-            return Optional.of(metadata.getTableSchema(session, tableHandle.get()).getTableSchema());
+            return Optional.of(metadata.getTableSchema(session, tableHandle.get()).tableSchema());
         }
 
         return Optional.empty();
@@ -75,8 +76,8 @@ public class InternalMetadataProvider
         return viewColumns.stream()
                 .map(viewColumn ->
                         ColumnSchema.builder()
-                                .setName(viewColumn.getName())
-                                .setType(typeManager.getType(viewColumn.getType()))
+                                .setName(viewColumn.name())
+                                .setType(typeManager.getType(viewColumn.type()))
                                 .build())
                 .collect(toImmutableList());
     }

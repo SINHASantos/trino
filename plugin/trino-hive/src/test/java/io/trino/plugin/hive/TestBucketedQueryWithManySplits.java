@@ -16,7 +16,8 @@ package io.trino.plugin.hive;
 import com.google.common.collect.ImmutableMap;
 import io.trino.testing.AbstractTestQueryFramework;
 import io.trino.testing.QueryRunner;
-import org.testng.annotations.Test;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
 import static java.lang.String.format;
 
@@ -28,15 +29,16 @@ public class TestBucketedQueryWithManySplits
             throws Exception
     {
         return HiveQueryRunner.builder()
-                .setNodeCount(1)
+                .setWorkerCount(0)
                 .setExtraProperties(ImmutableMap.of(
                         "query.schedule-split-batch-size", "1",
                         "node-scheduler.max-splits-per-node", "1",
-                        "node-scheduler.max-pending-splits-per-task", "1"))
+                        "node-scheduler.min-pending-splits-per-task", "1"))
                 .build();
     }
 
-    @Test(timeOut = 120_000)
+    @Test
+    @Timeout(120)
     public void testBucketedQueryWithManySplits()
     {
         QueryRunner queryRunner = getQueryRunner();

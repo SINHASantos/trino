@@ -23,13 +23,12 @@ import io.trino.plugin.hive.FileWriter;
 import io.trino.spi.Page;
 import io.trino.spi.TrinoException;
 import io.trino.spi.block.Block;
-import io.trino.spi.block.BlockBuilder;
 import io.trino.spi.block.RunLengthEncodedBlock;
 import io.trino.spi.type.Type;
-import org.apache.parquet.hadoop.metadata.CompressionCodecName;
+import org.apache.parquet.format.CompressionCodec;
+import org.apache.parquet.format.FileMetaData;
 import org.apache.parquet.schema.MessageType;
 import org.joda.time.DateTimeZone;
-import org.openjdk.jol.info.ClassLayout;
 
 import java.io.Closeable;
 import java.io.IOException;
@@ -43,18 +42,18 @@ import java.util.Optional;
 import java.util.function.Supplier;
 
 import static com.google.common.base.MoreObjects.toStringHelper;
+import static io.airlift.slice.SizeOf.instanceSize;
 import static io.trino.memory.context.AggregatedMemoryContext.newSimpleAggregatedMemoryContext;
 import static io.trino.parquet.ParquetWriteValidation.ParquetWriteValidationBuilder;
 import static io.trino.plugin.hive.HiveErrorCode.HIVE_WRITER_CLOSE_ERROR;
 import static io.trino.plugin.hive.HiveErrorCode.HIVE_WRITER_DATA_ERROR;
 import static io.trino.plugin.hive.HiveErrorCode.HIVE_WRITE_VALIDATION_FAILED;
-import static java.lang.Math.toIntExact;
 import static java.util.Objects.requireNonNull;
 
-public class ParquetFileWriter
+public final class ParquetFileWriter
         implements FileWriter
 {
-    private static final int INSTANCE_SIZE = toIntExact(ClassLayout.parseClass(ParquetFileWriter.class).instanceSize());
+    private static final int INSTANCE_SIZE = instanceSize(ParquetFileWriter.class);
     private static final ThreadMXBean THREAD_MX_BEAN = ManagementFactory.getThreadMXBean();
 
     private final ParquetWriter parquetWriter;
@@ -63,7 +62,7 @@ public class ParquetFileWriter
     private final List<Block> nullBlocks;
     private final Optional<Supplier<ParquetDataSource>> validationInputFactory;
     private long validationCpuNanos;
-    private AggregatedMemoryContext memoryContext;
+    private final AggregatedMemoryContext memoryContext;
 
     public ParquetFileWriter(
             TrinoOutputFile outputFile,
@@ -74,9 +73,8 @@ public class ParquetFileWriter
             Map<List<String>, Type> primitiveTypes,
             ParquetWriterOptions parquetWriterOptions,
             int[] fileInputColumnIndexes,
-            CompressionCodecName compressionCodecName,
+            CompressionCodec compressionCodec,
             String trinoVersion,
-            boolean useBatchColumnReadersForVerification,
             Optional<DateTimeZone> parquetTimeZone,
             Optional<Supplier<ParquetDataSource>> validationInputFactory)
             throws IOException
@@ -91,9 +89,8 @@ public class ParquetFileWriter
                 messageType,
                 primitiveTypes,
                 parquetWriterOptions,
-                compressionCodecName,
+                compressionCodec,
                 trinoVersion,
-                useBatchColumnReadersForVerification,
                 parquetTimeZone,
                 validationInputFactory.isPresent()
                         ? Optional.of(new ParquetWriteValidationBuilder(fileColumnTypes, fileColumnNames))
@@ -104,9 +101,7 @@ public class ParquetFileWriter
 
         ImmutableList.Builder<Block> nullBlocks = ImmutableList.builder();
         for (Type fileColumnType : fileColumnTypes) {
-            BlockBuilder blockBuilder = fileColumnType.createBlockBuilder(null, 1, 0);
-            blockBuilder.appendNull();
-            nullBlocks.add(blockBuilder.build());
+            nullBlocks.add(fileColumnType.createNullBlock());
         }
         this.nullBlocks = nullBlocks.build();
     }
@@ -155,7 +150,7 @@ public class ParquetFileWriter
             try {
                 rollbackAction.close();
             }
-            catch (Exception ignored) {
+            catch (Exception _) {
                 // ignore
             }
             throw new TrinoException(HIVE_WRITER_CLOSE_ERROR, "Error committing write parquet to Hive", e);
@@ -200,5 +195,10 @@ public class ParquetFileWriter
         return toStringHelper(this)
                 .add("writer", parquetWriter)
                 .toString();
+    }
+
+    public FileMetaData getFileMetadata()
+    {
+        return parquetWriter.getFileMetaData();
     }
 }

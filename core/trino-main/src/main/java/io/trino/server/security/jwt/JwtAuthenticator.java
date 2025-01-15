@@ -13,20 +13,20 @@
  */
 package io.trino.server.security.jwt;
 
+import com.google.inject.Inject;
 import io.jsonwebtoken.Claims;
 import io.jsonwebtoken.JwtParser;
 import io.jsonwebtoken.JwtParserBuilder;
-import io.jsonwebtoken.SigningKeyResolver;
+import io.jsonwebtoken.Locator;
 import io.trino.server.security.AbstractBearerAuthenticator;
 import io.trino.server.security.AuthenticationException;
 import io.trino.server.security.UserMapping;
 import io.trino.server.security.UserMappingException;
 import io.trino.spi.security.BasicPrincipal;
 import io.trino.spi.security.Identity;
+import jakarta.ws.rs.container.ContainerRequestContext;
 
-import javax.inject.Inject;
-import javax.ws.rs.container.ContainerRequestContext;
-
+import java.security.Key;
 import java.util.Collection;
 import java.util.Optional;
 
@@ -44,13 +44,13 @@ public class JwtAuthenticator
     private final Optional<String> requiredAudience;
 
     @Inject
-    public JwtAuthenticator(JwtAuthenticatorConfig config, @ForJwt SigningKeyResolver signingKeyResolver)
+    public JwtAuthenticator(JwtAuthenticatorConfig config, @ForJwt Locator<Key> signingKeyLocator)
     {
         principalField = config.getPrincipalField();
         requiredAudience = Optional.ofNullable(config.getRequiredAudience());
 
         JwtParserBuilder jwtParser = newJwtParserBuilder()
-                .setSigningKeyResolver(signingKeyResolver);
+                .keyLocator(signingKeyLocator);
 
         if (config.getRequiredIssuer() != null) {
             jwtParser.requireIssuer(config.getRequiredIssuer());
@@ -63,7 +63,7 @@ public class JwtAuthenticator
     protected Optional<Identity> createIdentity(String token)
             throws UserMappingException
     {
-        Claims claims = jwtParser.parseClaimsJws(token).getBody();
+        Claims claims = jwtParser.parseSignedClaims(token).getPayload();
         validateAudience(claims);
 
         Optional<String> principal = Optional.ofNullable(claims.get(principalField, String.class));

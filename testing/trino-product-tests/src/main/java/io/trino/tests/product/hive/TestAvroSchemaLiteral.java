@@ -17,26 +17,29 @@ import org.intellij.lang.annotations.Language;
 import org.testng.annotations.Test;
 
 import static io.trino.tempto.assertions.QueryAssert.Row.row;
-import static io.trino.tempto.assertions.QueryAssert.assertThat;
-import static io.trino.tests.product.TestGroups.AVRO;
 import static io.trino.tests.product.utils.QueryExecutors.onHive;
 import static io.trino.tests.product.utils.QueryExecutors.onTrino;
 import static java.lang.String.format;
+import static org.assertj.core.api.Assertions.assertThat;
 
 public class TestAvroSchemaLiteral
         extends HiveProductTest
 {
     @Language("JSON")
-    private static final String SCHEMA_LITERAL = "{\n" +
-            "  \"namespace\": \"io.trino.test\",\n" +
-            "  \"name\": \"product_tests_avro_table\",\n" +
-            "  \"type\": \"record\",\n" +
-            "  \"fields\": [\n" +
-            "    { \"name\":\"string_col\", \"type\":\"string\"},\n" +
-            "    { \"name\":\"int_col\", \"type\":\"int\" }\n" +
-            "]}";
+    private static final String SCHEMA_LITERAL =
+            """
+            {
+              "namespace": "io.trino.test",
+              "name": "product_tests_avro_table",
+              "type": "record",
+              "fields": [
+                { "name":"string_col", "type":"string"},
+                { "name":"int_col", "type":"int" }
+              ]
+            }
+            """;
 
-    @Test(groups = AVRO)
+    @Test
     public void testHiveCreatedTable()
     {
         onHive().executeQuery("DROP TABLE IF EXISTS test_avro_schema_literal_hive");
@@ -56,7 +59,7 @@ public class TestAvroSchemaLiteral
         onHive().executeQuery("DROP TABLE test_avro_schema_literal_hive");
     }
 
-    @Test(groups = AVRO)
+    @Test
     public void testTrinoCreatedTable()
     {
         onTrino().executeQuery("DROP TABLE IF EXISTS test_avro_schema_literal_trino");

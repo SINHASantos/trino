@@ -14,8 +14,8 @@
 package io.trino.split;
 
 import com.google.common.util.concurrent.ListenableFuture;
-import io.trino.connector.CatalogHandle;
 import io.trino.metadata.Split;
+import io.trino.spi.connector.CatalogHandle;
 
 import java.io.Closeable;
 import java.util.List;
@@ -54,7 +54,7 @@ public interface SplitSource
         }
 
         /**
-         * Returns <tt>true</tt> if all splits for the requested driver group have been returned.
+         * Returns {@code true<} if all splits for the requested driver group have been returned.
          * In other hands, splits returned from this and all previous invocations of {@link #getNextBatch}
          * form the complete set of splits in the requested driver group.
          */

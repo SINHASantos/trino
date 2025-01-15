@@ -26,6 +26,7 @@ import io.airlift.discovery.store.StoreResource;
 import io.airlift.http.server.HttpServer.ClientCertificate;
 import io.airlift.http.server.HttpServerConfig;
 import io.airlift.jmx.MBeanResource;
+import io.airlift.openmetrics.MetricsResource;
 import io.trino.server.security.jwt.JwtAuthenticator;
 import io.trino.server.security.jwt.JwtAuthenticatorSupportModule;
 import io.trino.server.security.oauth2.OAuth2AuthenticationSupportModule;
@@ -43,6 +44,7 @@ import static io.airlift.configuration.ConditionalModule.conditionalModule;
 import static io.airlift.configuration.ConfigBinder.configBinder;
 import static io.airlift.configuration.ConfigurationAwareModule.combine;
 import static io.airlift.http.server.HttpServer.ClientCertificate.REQUESTED;
+import static io.airlift.http.server.HttpServerConfig.ProcessForwardedMode.ACCEPT;
 import static io.airlift.jaxrs.JaxrsBinder.jaxrsBinder;
 import static io.trino.server.security.ResourceSecurityBinder.resourceSecurityBinder;
 import static java.util.Locale.ENGLISH;
@@ -59,6 +61,7 @@ public class ServerSecurityModule
         resourceSecurityBinder(binder)
                 .managementReadResource(ServiceResource.class)
                 .managementReadResource(MBeanResource.class)
+                .managementReadResource(MetricsResource.class)
                 .internalOnlyResource(DynamicAnnouncementResource.class)
                 .internalOnlyResource(StoreResource.class);
 
@@ -137,7 +140,7 @@ public class ServerSecurityModule
         HttpServerConfig httpServerConfig = buildConfigObject(HttpServerConfig.class);
         SecurityConfig securityConfig = buildConfigObject(SecurityConfig.class);
         // if secure https authentication is enabled, disable insecure authentication over http
-        if ((httpServerConfig.isHttpsEnabled() || httpServerConfig.isProcessForwarded()) &&
+        if ((httpServerConfig.isHttpsEnabled() || httpServerConfig.getProcessForwarded() == ACCEPT) &&
                 !securityConfig.getAuthenticationTypes().equals(ImmutableList.of("insecure"))) {
             install(binder -> configBinder(binder).bindConfigDefaults(SecurityConfig.class, config -> config.setInsecureAuthenticationOverHttpAllowed(false)));
         }

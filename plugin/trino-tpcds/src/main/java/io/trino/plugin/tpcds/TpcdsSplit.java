@@ -16,23 +16,25 @@ package io.trino.plugin.tpcds;
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableMap;
 import io.trino.spi.HostAddress;
 import io.trino.spi.connector.ConnectorSplit;
-import org.openjdk.jol.info.ClassLayout;
 
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 
 import static com.google.common.base.MoreObjects.toStringHelper;
 import static com.google.common.base.Preconditions.checkState;
 import static io.airlift.slice.SizeOf.estimatedSizeOf;
-import static java.lang.Math.toIntExact;
+import static io.airlift.slice.SizeOf.instanceSize;
 import static java.util.Objects.requireNonNull;
+import static java.util.stream.Collectors.joining;
 
 public class TpcdsSplit
         implements ConnectorSplit
 {
-    private static final int INSTANCE_SIZE = toIntExact(ClassLayout.parseClass(TpcdsSplit.class).instanceSize());
+    private static final int INSTANCE_SIZE = instanceSize(TpcdsSplit.class);
 
     private final int totalParts;
     private final int partNumber;
@@ -70,9 +72,13 @@ public class TpcdsSplit
     }
 
     @Override
-    public Object getInfo()
+    public Map<String, String> getSplitInfo()
     {
-        return this;
+        return ImmutableMap.of(
+                "addresses", addresses.stream().map(HostAddress::toString).collect(joining(",")),
+                "partNumber", String.valueOf(partNumber),
+                "totalParts", String.valueOf(totalParts),
+                "noSexism", String.valueOf(noSexism));
     }
 
     @Override
@@ -111,9 +117,9 @@ public class TpcdsSplit
             return false;
         }
         TpcdsSplit other = (TpcdsSplit) obj;
-        return Objects.equals(this.totalParts, other.totalParts) &&
-                Objects.equals(this.partNumber, other.partNumber) &&
-                Objects.equals(this.noSexism, other.noSexism);
+        return this.totalParts == other.totalParts &&
+               this.partNumber == other.partNumber &&
+               this.noSexism == other.noSexism;
     }
 
     @Override

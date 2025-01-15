@@ -16,18 +16,21 @@ package io.trino.plugin.redis;
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableMap;
 import io.trino.spi.HostAddress;
 import io.trino.spi.connector.ColumnHandle;
 import io.trino.spi.connector.ConnectorSplit;
 import io.trino.spi.predicate.TupleDomain;
-import org.openjdk.jol.info.ClassLayout;
 
 import java.util.List;
+import java.util.Map;
 
 import static com.google.common.base.MoreObjects.toStringHelper;
 import static io.airlift.slice.SizeOf.estimatedSizeOf;
-import static java.lang.Math.toIntExact;
+import static io.airlift.slice.SizeOf.instanceSize;
 import static java.util.Objects.requireNonNull;
+import static java.util.Objects.requireNonNullElse;
+import static java.util.stream.Collectors.joining;
 
 /**
  * Represents a Redis specific {@link ConnectorSplit}.
@@ -35,7 +38,7 @@ import static java.util.Objects.requireNonNull;
 public final class RedisSplit
         implements ConnectorSplit
 {
-    private static final int INSTANCE_SIZE = toIntExact(ClassLayout.parseClass(RedisSplit.class).instanceSize());
+    private static final int INSTANCE_SIZE = instanceSize(RedisSplit.class);
 
     private final String schemaName;
     private final String tableName;
@@ -143,21 +146,18 @@ public final class RedisSplit
     }
 
     @Override
-    public boolean isRemotelyAccessible()
-    {
-        return true;
-    }
-
-    @Override
     public List<HostAddress> getAddresses()
     {
         return nodes;
     }
 
     @Override
-    public Object getInfo()
+    public Map<String, String> getSplitInfo()
     {
-        return this;
+        return ImmutableMap.of(
+                "addresses", nodes.stream().map(HostAddress::toString).collect(joining(",")),
+                "keyName", requireNonNullElse(keyName, ""),
+                "constraint", constraint.toString());
     }
 
     @Override
@@ -175,14 +175,11 @@ public final class RedisSplit
 
     public static RedisDataType toRedisDataType(String dataFormat)
     {
-        switch (dataFormat) {
-            case "hash":
-                return RedisDataType.HASH;
-            case "zset":
-                return RedisDataType.ZSET;
-            default:
-                return RedisDataType.STRING;
-        }
+        return switch (dataFormat) {
+            case "hash" -> RedisDataType.HASH;
+            case "zset" -> RedisDataType.ZSET;
+            default -> RedisDataType.STRING;
+        };
     }
 
     @Override

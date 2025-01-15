@@ -15,14 +15,14 @@ package io.trino.parquet.reader.flat;
 
 import com.google.common.base.VerifyException;
 import io.trino.parquet.reader.FilteredRowRanges;
-import org.testng.annotations.Test;
+import org.junit.jupiter.api.Test;
 
 import java.util.Optional;
 import java.util.OptionalLong;
 
 import static io.trino.parquet.reader.FilteredRowRanges.RowRange;
-import static org.apache.parquet.internal.filter2.columnindex.TestingRowRanges.toRowRange;
-import static org.apache.parquet.internal.filter2.columnindex.TestingRowRanges.toRowRanges;
+import static io.trino.parquet.reader.TestingRowRanges.toRowRange;
+import static io.trino.parquet.reader.TestingRowRanges.toRowRanges;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
@@ -36,6 +36,7 @@ public class TestRowRangesIterator
         assertThat(ranges.skipToRangeStart()).isEqualTo(0);
         assertThat(ranges.advanceRange(100)).isEqualTo(100);
         assertThat(ranges.seekForward(100)).isEqualTo(100);
+        assertThat(ranges.getRowsLeftInCurrentRange()).isEqualTo(Integer.MAX_VALUE);
         assertThat(ranges.isPageFullyConsumed(100)).isTrue();
     }
 
@@ -53,6 +54,7 @@ public class TestRowRangesIterator
         RowRangesIterator ranges = createRowRangesIterator(range(20, 30), range(50, 99));
         ranges.resetForNewPage(OptionalLong.of(0));
         assertThat(ranges.skipToRangeStart()).isEqualTo(20);
+        assertThat(ranges.getRowsLeftInCurrentRange()).isEqualTo(11);
         assertThat(ranges.skipToRangeStart()).isEqualTo(0);
 
         ranges = createRowRangesIterator(range(20, 30), range(50, 99));
@@ -67,11 +69,14 @@ public class TestRowRangesIterator
         ranges = createRowRangesIterator(range(20, 30), range(50, 99));
         ranges.resetForNewPage(OptionalLong.of(35));
         assertThat(ranges.skipToRangeStart()).isEqualTo(15);
+        assertThat(ranges.getRowsLeftInCurrentRange()).isEqualTo(50);
         assertThat(ranges.skipToRangeStart()).isEqualTo(0);
 
         ranges = createRowRangesIterator(range(20, 30), range(50, 99));
         ranges.resetForNewPage(OptionalLong.of(75));
+        assertThat(ranges.getRowsLeftInCurrentRange()).isEqualTo(25);
         assertThat(ranges.skipToRangeStart()).isEqualTo(0);
+        assertThat(ranges.getRowsLeftInCurrentRange()).isEqualTo(25);
 
         assertThatThrownBy(() -> createRowRangesIterator(range(20, 30), range(50, 99))
                 .resetForNewPage(OptionalLong.of(100)))
@@ -104,8 +109,10 @@ public class TestRowRangesIterator
         ranges.resetForNewPage(OptionalLong.of(0));
         assertThat(ranges.skipToRangeStart()).isEqualTo(20);
         assertThat(ranges.advanceRange(10)).isEqualTo(10);
+        assertThat(ranges.getRowsLeftInCurrentRange()).isEqualTo(1);
         assertThat(ranges.advanceRange(15)).isEqualTo(1);
         assertThat(ranges.skipToRangeStart()).isEqualTo(19);
+        assertThat(ranges.getRowsLeftInCurrentRange()).isEqualTo(50);
 
         ranges = createRowRangesIterator(range(20, 30), range(50, 99));
         ranges.resetForNewPage(OptionalLong.of(20));

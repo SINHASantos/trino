@@ -14,12 +14,13 @@
 package io.trino.sql.planner.plan;
 
 import com.fasterxml.jackson.annotation.JsonCreator;
-import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.annotation.JsonSubTypes;
 import com.fasterxml.jackson.annotation.JsonTypeInfo;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.Iterables;
+import com.google.common.collect.Multimap;
+import com.google.errorprone.annotations.Immutable;
 import io.trino.Session;
 import io.trino.metadata.InsertTableHandle;
 import io.trino.metadata.MergeHandle;
@@ -29,19 +30,19 @@ import io.trino.metadata.QualifiedObjectName;
 import io.trino.metadata.TableExecuteHandle;
 import io.trino.metadata.TableHandle;
 import io.trino.metadata.TableLayout;
+import io.trino.spi.RefreshType;
 import io.trino.spi.connector.ColumnHandle;
 import io.trino.spi.connector.ConnectorTableMetadata;
 import io.trino.spi.connector.RowChangeParadigm;
 import io.trino.spi.connector.SchemaTableName;
+import io.trino.spi.connector.WriterScalingOptions;
 import io.trino.spi.type.Type;
 import io.trino.sql.planner.PartitioningScheme;
 import io.trino.sql.planner.Symbol;
-import io.trino.sql.tree.Table;
-
-import javax.annotation.concurrent.Immutable;
 
 import java.util.List;
 import java.util.Optional;
+import java.util.OptionalInt;
 
 import static com.google.common.base.Preconditions.checkArgument;
 import static java.util.Objects.requireNonNull;
@@ -57,7 +58,6 @@ public class TableWriterNode
     private final List<Symbol> columns;
     private final List<String> columnNames;
     private final Optional<PartitioningScheme> partitioningScheme;
-    private final Optional<PartitioningScheme> preferredPartitioningScheme;
     private final Optional<StatisticAggregations> statisticsAggregation;
     private final Optional<StatisticAggregationsDescriptor<Symbol>> statisticsAggregationDescriptor;
     private final List<Symbol> outputs;
@@ -72,7 +72,6 @@ public class TableWriterNode
             @JsonProperty("columns") List<Symbol> columns,
             @JsonProperty("columnNames") List<String> columnNames,
             @JsonProperty("partitioningScheme") Optional<PartitioningScheme> partitioningScheme,
-            @JsonProperty("preferredPartitioningScheme") Optional<PartitioningScheme> preferredPartitioningScheme,
             @JsonProperty("statisticsAggregation") Optional<StatisticAggregations> statisticsAggregation,
             @JsonProperty("statisticsAggregationDescriptor") Optional<StatisticAggregationsDescriptor<Symbol>> statisticsAggregationDescriptor)
     {
@@ -89,11 +88,9 @@ public class TableWriterNode
         this.columns = ImmutableList.copyOf(columns);
         this.columnNames = ImmutableList.copyOf(columnNames);
         this.partitioningScheme = requireNonNull(partitioningScheme, "partitioningScheme is null");
-        this.preferredPartitioningScheme = requireNonNull(preferredPartitioningScheme, "preferredPartitioningScheme is null");
         this.statisticsAggregation = requireNonNull(statisticsAggregation, "statisticsAggregation is null");
         this.statisticsAggregationDescriptor = requireNonNull(statisticsAggregationDescriptor, "statisticsAggregationDescriptor is null");
         checkArgument(statisticsAggregation.isPresent() == statisticsAggregationDescriptor.isPresent(), "statisticsAggregation and statisticsAggregationDescriptor must be either present or absent");
-        checkArgument(partitioningScheme.isEmpty() || preferredPartitioningScheme.isEmpty(), "Both partitioningScheme and preferredPartitioningScheme cannot be present");
 
         ImmutableList.Builder<Symbol> outputs = ImmutableList.<Symbol>builder()
                 .add(rowCountSymbol)
@@ -148,12 +145,6 @@ public class TableWriterNode
     }
 
     @JsonProperty
-    public Optional<PartitioningScheme> getPreferredPartitioningScheme()
-    {
-        return preferredPartitioningScheme;
-    }
-
-    @JsonProperty
     public Optional<StatisticAggregations> getStatisticsAggregation()
     {
         return statisticsAggregation;
@@ -186,16 +177,14 @@ public class TableWriterNode
     @Override
     public PlanNode replaceChildren(List<PlanNode> newChildren)
     {
-        return new TableWriterNode(getId(), Iterables.getOnlyElement(newChildren), target, rowCountSymbol, fragmentSymbol, columns, columnNames, partitioningScheme, preferredPartitioningScheme, statisticsAggregation, statisticsAggregationDescriptor);
+        return new TableWriterNode(getId(), Iterables.getOnlyElement(newChildren), target, rowCountSymbol, fragmentSymbol, columns, columnNames, partitioningScheme, statisticsAggregation, statisticsAggregationDescriptor);
     }
 
     @JsonTypeInfo(use = JsonTypeInfo.Id.NAME, property = "@type")
     @JsonSubTypes({
             @JsonSubTypes.Type(value = CreateTarget.class, name = "CreateTarget"),
             @JsonSubTypes.Type(value = InsertTarget.class, name = "InsertTarget"),
-            @JsonSubTypes.Type(value = DeleteTarget.class, name = "DeleteTarget"),
             @JsonSubTypes.Type(value = MergeTarget.class, name = "MergeTarget"),
-            @JsonSubTypes.Type(value = UpdateTarget.class, name = "UpdateTarget"),
             @JsonSubTypes.Type(value = RefreshMaterializedViewTarget.class, name = "RefreshMaterializedViewTarget"),
             @JsonSubTypes.Type(value = TableExecuteTarget.class, name = "TableExecuteTarget"),
     })
@@ -206,9 +195,11 @@ public class TableWriterNode
         @Override
         public abstract String toString();
 
-        public abstract boolean supportsReportingWrittenBytes(Metadata metadata, Session session);
-
         public abstract boolean supportsMultipleWritersPerPartition(Metadata metadata, Session session);
+
+        public abstract OptionalInt getMaxWriterTasks(Metadata metadata, Session session);
+
+        public abstract WriterScalingOptions getWriterScalingOptions(Metadata metadata, Session session);
     }
 
     // only used during planning -- will not be serialized
@@ -218,12 +209,14 @@ public class TableWriterNode
         private final String catalog;
         private final ConnectorTableMetadata tableMetadata;
         private final Optional<TableLayout> layout;
+        private final boolean replace;
 
-        public CreateReference(String catalog, ConnectorTableMetadata tableMetadata, Optional<TableLayout> layout)
+        public CreateReference(String catalog, ConnectorTableMetadata tableMetadata, Optional<TableLayout> layout, boolean replace)
         {
             this.catalog = requireNonNull(catalog, "catalog is null");
             this.tableMetadata = requireNonNull(tableMetadata, "tableMetadata is null");
             this.layout = requireNonNull(layout, "layout is null");
+            this.replace = replace;
         }
 
         public String getCatalog()
@@ -232,19 +225,25 @@ public class TableWriterNode
         }
 
         @Override
-        public boolean supportsReportingWrittenBytes(Metadata metadata, Session session)
-        {
-            QualifiedObjectName fullTableName = new QualifiedObjectName(
-                    catalog,
-                    tableMetadata.getTableSchema().getTable().getSchemaName(),
-                    tableMetadata.getTableSchema().getTable().getTableName());
-            return metadata.supportsReportingWrittenBytes(session, fullTableName, tableMetadata.getProperties());
-        }
-
-        @Override
         public boolean supportsMultipleWritersPerPartition(Metadata metadata, Session session)
         {
             return layout.map(tableLayout -> tableLayout.getLayout().supportsMultipleWritersPerPartition()).orElse(true);
+        }
+
+        @Override
+        public OptionalInt getMaxWriterTasks(Metadata metadata, Session session)
+        {
+            return metadata.getMaxWriterTasks(session, catalog);
+        }
+
+        @Override
+        public WriterScalingOptions getWriterScalingOptions(Metadata metadata, Session session)
+        {
+            QualifiedObjectName tableName = new QualifiedObjectName(
+                    catalog,
+                    tableMetadata.getTableSchema().getTable().getSchemaName(),
+                    tableMetadata.getTableSchema().getTable().getTableName());
+            return metadata.getNewTableWriterScalingOptions(session, tableName, tableMetadata.getProperties());
         }
 
         public Optional<TableLayout> getLayout()
@@ -255,6 +254,11 @@ public class TableWriterNode
         public ConnectorTableMetadata getTableMetadata()
         {
             return tableMetadata;
+        }
+
+        public boolean isReplace()
+        {
+            return replace;
         }
 
         @Override
@@ -269,20 +273,26 @@ public class TableWriterNode
     {
         private final OutputTableHandle handle;
         private final SchemaTableName schemaTableName;
-        private final boolean reportingWrittenBytesSupported;
         private final boolean multipleWritersPerPartitionSupported;
+        private final OptionalInt maxWriterTasks;
+        private final WriterScalingOptions writerScalingOptions;
+        private final boolean replace;
 
         @JsonCreator
         public CreateTarget(
                 @JsonProperty("handle") OutputTableHandle handle,
                 @JsonProperty("schemaTableName") SchemaTableName schemaTableName,
-                @JsonProperty("reportingWrittenBytesSupported") boolean reportingWrittenBytesSupported,
-                @JsonProperty("multipleWritersPerPartitionSupported") boolean multipleWritersPerPartitionSupported)
+                @JsonProperty("multipleWritersPerPartitionSupported") boolean multipleWritersPerPartitionSupported,
+                @JsonProperty("maxWriterTasks") OptionalInt maxWriterTasks,
+                @JsonProperty("writerScalingOptions") WriterScalingOptions writerScalingOptions,
+                @JsonProperty("replace") boolean replace)
         {
             this.handle = requireNonNull(handle, "handle is null");
             this.schemaTableName = requireNonNull(schemaTableName, "schemaTableName is null");
-            this.reportingWrittenBytesSupported = reportingWrittenBytesSupported;
             this.multipleWritersPerPartitionSupported = multipleWritersPerPartitionSupported;
+            this.maxWriterTasks = requireNonNull(maxWriterTasks, "maxWriterTasks is null");
+            this.writerScalingOptions = requireNonNull(writerScalingOptions, "writerScalingOptions is null");
+            this.replace = replace;
         }
 
         @JsonProperty
@@ -298,15 +308,21 @@ public class TableWriterNode
         }
 
         @JsonProperty
-        public boolean getReportingWrittenBytesSupported()
-        {
-            return reportingWrittenBytesSupported;
-        }
-
-        @JsonProperty
         public boolean isMultipleWritersPerPartitionSupported()
         {
             return multipleWritersPerPartitionSupported;
+        }
+
+        @JsonProperty
+        public WriterScalingOptions getWriterScalingOptions()
+        {
+            return writerScalingOptions;
+        }
+
+        @JsonProperty
+        public boolean isReplace()
+        {
+            return replace;
         }
 
         @Override
@@ -316,15 +332,21 @@ public class TableWriterNode
         }
 
         @Override
-        public boolean supportsReportingWrittenBytes(Metadata metadata, Session session)
-        {
-            return reportingWrittenBytesSupported;
-        }
-
-        @Override
         public boolean supportsMultipleWritersPerPartition(Metadata metadata, Session session)
         {
             return multipleWritersPerPartitionSupported;
+        }
+
+        @Override
+        public OptionalInt getMaxWriterTasks(Metadata metadata, Session session)
+        {
+            return maxWriterTasks;
+        }
+
+        @Override
+        public WriterScalingOptions getWriterScalingOptions(Metadata metadata, Session session)
+        {
+            return writerScalingOptions;
         }
     }
 
@@ -358,17 +380,23 @@ public class TableWriterNode
         }
 
         @Override
-        public boolean supportsReportingWrittenBytes(Metadata metadata, Session session)
-        {
-            return metadata.supportsReportingWrittenBytes(session, handle);
-        }
-
-        @Override
         public boolean supportsMultipleWritersPerPartition(Metadata metadata, Session session)
         {
             return metadata.getInsertLayout(session, handle)
                     .map(layout -> layout.getLayout().supportsMultipleWritersPerPartition())
                     .orElse(true);
+        }
+
+        @Override
+        public OptionalInt getMaxWriterTasks(Metadata metadata, Session session)
+        {
+            return metadata.getMaxWriterTasks(session, handle.catalogHandle().getCatalogName().toString());
+        }
+
+        @Override
+        public WriterScalingOptions getWriterScalingOptions(Metadata metadata, Session session)
+        {
+            return metadata.getInsertWriterScalingOptions(session, handle);
         }
     }
 
@@ -377,20 +405,26 @@ public class TableWriterNode
     {
         private final InsertTableHandle handle;
         private final SchemaTableName schemaTableName;
-        private final boolean reportingWrittenBytesSupported;
         private final boolean multipleWritersPerPartitionSupported;
+        private final OptionalInt maxWriterTasks;
+        private final WriterScalingOptions writerScalingOptions;
+        private final List<TableHandle> sourceTableHandles;
 
         @JsonCreator
         public InsertTarget(
                 @JsonProperty("handle") InsertTableHandle handle,
                 @JsonProperty("schemaTableName") SchemaTableName schemaTableName,
-                @JsonProperty("reportingWrittenBytesSupported") boolean reportingWrittenBytesSupported,
-                @JsonProperty("multipleWritersPerPartitionSupported") boolean multipleWritersPerPartitionSupported)
+                @JsonProperty("multipleWritersPerPartitionSupported") boolean multipleWritersPerPartitionSupported,
+                @JsonProperty("maxWriterTasks") OptionalInt maxWriterTasks,
+                @JsonProperty("writerScalingOptions") WriterScalingOptions writerScalingOptions,
+                @JsonProperty("sourceTableHandles") List<TableHandle> sourceTableHandles)
         {
             this.handle = requireNonNull(handle, "handle is null");
             this.schemaTableName = requireNonNull(schemaTableName, "schemaTableName is null");
-            this.reportingWrittenBytesSupported = reportingWrittenBytesSupported;
             this.multipleWritersPerPartitionSupported = multipleWritersPerPartitionSupported;
+            this.maxWriterTasks = requireNonNull(maxWriterTasks, "maxWriterTasks is null");
+            this.writerScalingOptions = requireNonNull(writerScalingOptions, "writerScalingOptions is null");
+            this.sourceTableHandles = ImmutableList.copyOf(sourceTableHandles);
         }
 
         @JsonProperty
@@ -406,15 +440,15 @@ public class TableWriterNode
         }
 
         @JsonProperty
-        public boolean getReportingWrittenBytesSupported()
-        {
-            return reportingWrittenBytesSupported;
-        }
-
-        @JsonProperty
         public boolean isMultipleWritersPerPartitionSupported()
         {
             return multipleWritersPerPartitionSupported;
+        }
+
+        @JsonProperty
+        public WriterScalingOptions getWriterScalingOptions()
+        {
+            return writerScalingOptions;
         }
 
         @Override
@@ -424,35 +458,51 @@ public class TableWriterNode
         }
 
         @Override
-        public boolean supportsReportingWrittenBytes(Metadata metadata, Session session)
-        {
-            return reportingWrittenBytesSupported;
-        }
-
-        @Override
         public boolean supportsMultipleWritersPerPartition(Metadata metadata, Session session)
         {
             return multipleWritersPerPartitionSupported;
+        }
+
+        @Override
+        public OptionalInt getMaxWriterTasks(Metadata metadata, Session session)
+        {
+            return maxWriterTasks;
+        }
+
+        @Override
+        public WriterScalingOptions getWriterScalingOptions(Metadata metadata, Session session)
+        {
+            return writerScalingOptions;
+        }
+
+        @JsonProperty
+        public List<TableHandle> getSourceTableHandles()
+        {
+            return sourceTableHandles;
         }
     }
 
     public static class RefreshMaterializedViewReference
             extends WriterTarget
     {
-        private final Table table;
+        private final String table;
         private final TableHandle storageTableHandle;
         private final List<TableHandle> sourceTableHandles;
+        private final List<String> sourceTableFunctions;
+        private final RefreshType refreshType;
 
-        public RefreshMaterializedViewReference(Table table, TableHandle storageTableHandle, List<TableHandle> sourceTableHandles)
+        public RefreshMaterializedViewReference(
+                String table,
+                TableHandle storageTableHandle,
+                List<TableHandle> sourceTableHandles,
+                List<String> sourceTableFunctions,
+                RefreshType refreshType)
         {
             this.table = requireNonNull(table, "table is null");
             this.storageTableHandle = requireNonNull(storageTableHandle, "storageTableHandle is null");
             this.sourceTableHandles = ImmutableList.copyOf(sourceTableHandles);
-        }
-
-        public Table getTable()
-        {
-            return table;
+            this.sourceTableFunctions = ImmutableList.copyOf(sourceTableFunctions);
+            this.refreshType = requireNonNull(refreshType, "refreshType is null");
         }
 
         public TableHandle getStorageTableHandle()
@@ -468,13 +518,7 @@ public class TableWriterNode
         @Override
         public String toString()
         {
-            return table.toString();
-        }
-
-        @Override
-        public boolean supportsReportingWrittenBytes(Metadata metadata, Session session)
-        {
-            return metadata.supportsReportingWrittenBytes(session, storageTableHandle);
+            return table;
         }
 
         @Override
@@ -483,6 +527,33 @@ public class TableWriterNode
             return metadata.getInsertLayout(session, storageTableHandle)
                     .map(layout -> layout.getLayout().supportsMultipleWritersPerPartition())
                     .orElse(true);
+        }
+
+        @Override
+        public OptionalInt getMaxWriterTasks(Metadata metadata, Session session)
+        {
+            return metadata.getMaxWriterTasks(session, storageTableHandle.catalogHandle().getCatalogName().toString());
+        }
+
+        public List<String> getSourceTableFunctions()
+        {
+            return sourceTableFunctions;
+        }
+
+        @Override
+        public WriterScalingOptions getWriterScalingOptions(Metadata metadata, Session session)
+        {
+            return metadata.getInsertWriterScalingOptions(session, storageTableHandle);
+        }
+
+        public RefreshType getRefreshType()
+        {
+            return refreshType;
+        }
+
+        public RefreshMaterializedViewReference withRefreshType(RefreshType refreshType)
+        {
+            return new RefreshMaterializedViewReference(table, storageTableHandle, sourceTableHandles, sourceTableFunctions, refreshType);
         }
     }
 
@@ -493,18 +564,24 @@ public class TableWriterNode
         private final InsertTableHandle insertHandle;
         private final SchemaTableName schemaTableName;
         private final List<TableHandle> sourceTableHandles;
+        private final List<String> sourceTableFunctions;
+        private final WriterScalingOptions writerScalingOptions;
 
         @JsonCreator
         public RefreshMaterializedViewTarget(
                 @JsonProperty("tableHandle") TableHandle tableHandle,
                 @JsonProperty("insertHandle") InsertTableHandle insertHandle,
                 @JsonProperty("schemaTableName") SchemaTableName schemaTableName,
-                @JsonProperty("sourceTableHandles") List<TableHandle> sourceTableHandles)
+                @JsonProperty("sourceTableHandles") List<TableHandle> sourceTableHandles,
+                @JsonProperty("sourceTableFunctions") List<String> sourceTableFunctions,
+                @JsonProperty("writerScalingOptions") WriterScalingOptions writerScalingOptions)
         {
             this.tableHandle = requireNonNull(tableHandle, "tableHandle is null");
             this.insertHandle = requireNonNull(insertHandle, "insertHandle is null");
             this.schemaTableName = requireNonNull(schemaTableName, "schemaTableName is null");
             this.sourceTableHandles = ImmutableList.copyOf(sourceTableHandles);
+            this.sourceTableFunctions = ImmutableList.copyOf(sourceTableFunctions);
+            this.writerScalingOptions = requireNonNull(writerScalingOptions, "writerScalingOptions is null");
         }
 
         @JsonProperty
@@ -531,16 +608,22 @@ public class TableWriterNode
             return sourceTableHandles;
         }
 
+        @JsonProperty
+        public List<String> getSourceTableFunctions()
+        {
+            return sourceTableFunctions;
+        }
+
+        @JsonProperty
+        public WriterScalingOptions getWriterScalingOptions()
+        {
+            return writerScalingOptions;
+        }
+
         @Override
         public String toString()
         {
             return insertHandle.toString();
-        }
-
-        @Override
-        public boolean supportsReportingWrittenBytes(Metadata metadata, Session session)
-        {
-            return metadata.supportsReportingWrittenBytes(session, tableHandle);
         }
 
         @Override
@@ -550,128 +633,17 @@ public class TableWriterNode
                     .map(layout -> layout.getLayout().supportsMultipleWritersPerPartition())
                     .orElse(true);
         }
-    }
 
-    public static class DeleteTarget
-            extends WriterTarget
-    {
-        private final Optional<TableHandle> handle;
-        private final SchemaTableName schemaTableName;
-
-        @JsonCreator
-        public DeleteTarget(
-                @JsonProperty("handle") Optional<TableHandle> handle,
-                @JsonProperty("schemaTableName") SchemaTableName schemaTableName)
+        @Override
+        public OptionalInt getMaxWriterTasks(Metadata metadata, Session session)
         {
-            this.handle = requireNonNull(handle, "handle is null");
-            this.schemaTableName = requireNonNull(schemaTableName, "schemaTableName is null");
-        }
-
-        @JsonProperty
-        public Optional<TableHandle> getHandle()
-        {
-            return handle;
-        }
-
-        @JsonIgnore
-        public TableHandle getHandleOrElseThrow()
-        {
-            return handle.orElseThrow(() -> new IllegalStateException("DeleteTarget does not contain handle"));
-        }
-
-        @JsonProperty
-        public SchemaTableName getSchemaTableName()
-        {
-            return schemaTableName;
+            return metadata.getMaxWriterTasks(session, tableHandle.catalogHandle().getCatalogName().toString());
         }
 
         @Override
-        public String toString()
+        public WriterScalingOptions getWriterScalingOptions(Metadata metadata, Session session)
         {
-            return handle.map(Object::toString).orElse("[]");
-        }
-
-        @Override
-        public boolean supportsReportingWrittenBytes(Metadata metadata, Session session)
-        {
-            throw new UnsupportedOperationException();
-        }
-
-        @Override
-        public boolean supportsMultipleWritersPerPartition(Metadata metadata, Session session)
-        {
-            throw new UnsupportedOperationException();
-        }
-    }
-
-    public static class UpdateTarget
-            extends WriterTarget
-    {
-        private final Optional<TableHandle> handle;
-        private final SchemaTableName schemaTableName;
-        private final List<String> updatedColumns;
-        private final List<ColumnHandle> updatedColumnHandles;
-
-        @JsonCreator
-        public UpdateTarget(
-                @JsonProperty("handle") Optional<TableHandle> handle,
-                @JsonProperty("schemaTableName") SchemaTableName schemaTableName,
-                @JsonProperty("updatedColumns") List<String> updatedColumns,
-                @JsonProperty("updatedColumnHandles") List<ColumnHandle> updatedColumnHandles)
-        {
-            this.handle = requireNonNull(handle, "handle is null");
-            this.schemaTableName = requireNonNull(schemaTableName, "schemaTableName is null");
-            checkArgument(updatedColumns.size() == updatedColumnHandles.size(), "updatedColumns size %s must equal updatedColumnHandles size %s", updatedColumns.size(), updatedColumnHandles.size());
-            this.updatedColumns = requireNonNull(updatedColumns, "updatedColumns is null");
-            this.updatedColumnHandles = requireNonNull(updatedColumnHandles, "updatedColumnHandles is null");
-        }
-
-        @JsonProperty
-        public Optional<TableHandle> getHandle()
-        {
-            return handle;
-        }
-
-        @JsonIgnore
-        public TableHandle getHandleOrElseThrow()
-        {
-            return handle.orElseThrow(() -> new IllegalStateException("UpdateTarge does not contain handle"));
-        }
-
-        @JsonProperty
-        public SchemaTableName getSchemaTableName()
-        {
-            return schemaTableName;
-        }
-
-        @JsonProperty
-        public List<String> getUpdatedColumns()
-        {
-            return updatedColumns;
-        }
-
-        @JsonProperty
-        public List<ColumnHandle> getUpdatedColumnHandles()
-        {
-            return updatedColumnHandles;
-        }
-
-        @Override
-        public String toString()
-        {
-            return handle.map(Object::toString).orElse("[]");
-        }
-
-        @Override
-        public boolean supportsReportingWrittenBytes(Metadata metadata, Session session)
-        {
-            throw new UnsupportedOperationException();
-        }
-
-        @Override
-        public boolean supportsMultipleWritersPerPartition(Metadata metadata, Session session)
-        {
-            throw new UnsupportedOperationException();
+            return writerScalingOptions;
         }
     }
 
@@ -681,19 +653,19 @@ public class TableWriterNode
         private final TableExecuteHandle executeHandle;
         private final Optional<TableHandle> sourceHandle;
         private final SchemaTableName schemaTableName;
-        private final boolean reportingWrittenBytesSupported;
+        private final WriterScalingOptions writerScalingOptions;
 
         @JsonCreator
         public TableExecuteTarget(
                 @JsonProperty("executeHandle") TableExecuteHandle executeHandle,
                 @JsonProperty("sourceHandle") Optional<TableHandle> sourceHandle,
                 @JsonProperty("schemaTableName") SchemaTableName schemaTableName,
-                @JsonProperty("reportingWrittenBytesSupported") boolean reportingWrittenBytesSupported)
+                @JsonProperty("writerScalingOptions") WriterScalingOptions writerScalingOptions)
         {
             this.executeHandle = requireNonNull(executeHandle, "handle is null");
             this.sourceHandle = requireNonNull(sourceHandle, "sourceHandle is null");
             this.schemaTableName = requireNonNull(schemaTableName, "schemaTableName is null");
-            this.reportingWrittenBytesSupported = reportingWrittenBytesSupported;
+            this.writerScalingOptions = requireNonNull(writerScalingOptions, "writerScalingOptions is null");
         }
 
         @JsonProperty
@@ -720,9 +692,9 @@ public class TableWriterNode
         }
 
         @JsonProperty
-        public boolean isReportingWrittenBytesSupported()
+        public WriterScalingOptions getWriterScalingOptions()
         {
-            return reportingWrittenBytesSupported;
+            return writerScalingOptions;
         }
 
         @Override
@@ -732,17 +704,23 @@ public class TableWriterNode
         }
 
         @Override
-        public boolean supportsReportingWrittenBytes(Metadata metadata, Session session)
-        {
-            return sourceHandle.map(tableHandle -> metadata.supportsReportingWrittenBytes(session, tableHandle)).orElse(reportingWrittenBytesSupported);
-        }
-
-        @Override
         public boolean supportsMultipleWritersPerPartition(Metadata metadata, Session session)
         {
             return metadata.getLayoutForTableExecute(session, executeHandle)
                     .map(layout -> layout.getLayout().supportsMultipleWritersPerPartition())
                     .orElse(true);
+        }
+
+        @Override
+        public OptionalInt getMaxWriterTasks(Metadata metadata, Session session)
+        {
+            return metadata.getMaxWriterTasks(session, executeHandle.catalogHandle().getCatalogName().toString());
+        }
+
+        @Override
+        public WriterScalingOptions getWriterScalingOptions(Metadata metadata, Session session)
+        {
+            return writerScalingOptions;
         }
     }
 
@@ -753,18 +731,24 @@ public class TableWriterNode
         private final Optional<MergeHandle> mergeHandle;
         private final SchemaTableName schemaTableName;
         private final MergeParadigmAndTypes mergeParadigmAndTypes;
+        private final List<TableHandle> sourceTableHandles;
+        private final Multimap<Integer, ColumnHandle> updateCaseColumnHandles;
 
         @JsonCreator
         public MergeTarget(
                 @JsonProperty("handle") TableHandle handle,
                 @JsonProperty("mergeHandle") Optional<MergeHandle> mergeHandle,
                 @JsonProperty("schemaTableName") SchemaTableName schemaTableName,
-                @JsonProperty("mergeParadigmAndTypes") MergeParadigmAndTypes mergeParadigmAndTypes)
+                @JsonProperty("mergeParadigmAndTypes") MergeParadigmAndTypes mergeParadigmAndTypes,
+                @JsonProperty("sourceTableHandles") List<TableHandle> sourceTableHandles,
+                @JsonProperty("updateCaseColumnHandles") Multimap<Integer, ColumnHandle> updateCaseColumnHandles)
         {
             this.handle = requireNonNull(handle, "handle is null");
             this.mergeHandle = requireNonNull(mergeHandle, "mergeHandle is null");
             this.schemaTableName = requireNonNull(schemaTableName, "schemaTableName is null");
             this.mergeParadigmAndTypes = requireNonNull(mergeParadigmAndTypes, "mergeElements is null");
+            this.sourceTableHandles = ImmutableList.copyOf(requireNonNull(sourceTableHandles, "sourceTableHandles is null"));
+            this.updateCaseColumnHandles = requireNonNull(updateCaseColumnHandles, "updateCaseColumnHandles is null");
         }
 
         @JsonProperty
@@ -798,15 +782,33 @@ public class TableWriterNode
         }
 
         @Override
-        public boolean supportsReportingWrittenBytes(Metadata metadata, Session session)
+        public boolean supportsMultipleWritersPerPartition(Metadata metadata, Session session)
         {
             return false;
         }
 
         @Override
-        public boolean supportsMultipleWritersPerPartition(Metadata metadata, Session session)
+        public OptionalInt getMaxWriterTasks(Metadata metadata, Session session)
         {
-            return false;
+            return OptionalInt.empty();
+        }
+
+        @Override
+        public WriterScalingOptions getWriterScalingOptions(Metadata metadata, Session session)
+        {
+            return WriterScalingOptions.DISABLED;
+        }
+
+        @JsonProperty
+        public List<TableHandle> getSourceTableHandles()
+        {
+            return sourceTableHandles;
+        }
+
+        @JsonProperty
+        public Multimap<Integer, ColumnHandle> getUpdateCaseColumnHandles()
+        {
+            return updateCaseColumnHandles;
         }
     }
 

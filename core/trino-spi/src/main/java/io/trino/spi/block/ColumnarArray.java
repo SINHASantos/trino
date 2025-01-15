@@ -26,33 +26,34 @@ public class ColumnarArray
     {
         requireNonNull(block, "block is null");
 
-        if (block instanceof LazyBlock) {
-            block = ((LazyBlock) block).getBlock();
+        if (block instanceof LazyBlock lazyBlock) {
+            block = lazyBlock.getBlock();
         }
-        if (block instanceof DictionaryBlock) {
-            return toColumnarArray((DictionaryBlock) block);
+        if (block instanceof DictionaryBlock dictionaryBlock) {
+            return toColumnarArray(dictionaryBlock);
         }
-        if (block instanceof RunLengthEncodedBlock) {
-            return toColumnarArray((RunLengthEncodedBlock) block);
+        if (block instanceof RunLengthEncodedBlock runLengthEncodedBlock) {
+            return toColumnarArray(runLengthEncodedBlock);
         }
 
-        if (!(block instanceof AbstractArrayBlock)) {
+        if (!(block instanceof ArrayBlock arrayBlock)) {
             throw new IllegalArgumentException("Invalid array block: " + block.getClass().getName());
         }
 
-        AbstractArrayBlock arrayBlock = (AbstractArrayBlock) block;
         Block elementsBlock = arrayBlock.getRawElementBlock();
+        int[] offsets = arrayBlock.getOffsets();
+        int arrayOffset = arrayBlock.getOffsetBase();
 
         // trim elements to just visible region
         int elementsOffset = 0;
         int elementsLength = 0;
         if (arrayBlock.getPositionCount() > 0) {
-            elementsOffset = arrayBlock.getOffset(0);
-            elementsLength = arrayBlock.getOffset(arrayBlock.getPositionCount()) - elementsOffset;
+            elementsOffset = offsets[arrayOffset];
+            elementsLength = offsets[arrayBlock.getPositionCount() + arrayOffset] - elementsOffset;
         }
         elementsBlock = elementsBlock.getRegion(elementsOffset, elementsLength);
 
-        return new ColumnarArray(block, arrayBlock.getOffsetBase(), arrayBlock.getOffsets(), elementsBlock);
+        return new ColumnarArray(block, arrayOffset, offsets, elementsBlock);
     }
 
     private static ColumnarArray toColumnarArray(DictionaryBlock dictionaryBlock)

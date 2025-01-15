@@ -21,8 +21,7 @@ import io.airlift.log.Logger;
 import io.trino.plugin.kinesis.s3config.S3TableConfigClient;
 import io.trino.spi.TrinoException;
 import io.trino.spi.connector.SchemaTableName;
-
-import javax.annotation.PreDestroy;
+import jakarta.annotation.PreDestroy;
 
 import java.io.IOException;
 import java.nio.file.DirectoryIteratorException;
@@ -82,9 +81,9 @@ public class KinesisTableDescriptionSupplier
             for (Path file : listFiles(Paths.get(tableDescriptionLocation))) {
                 if (Files.isRegularFile(file) && file.getFileName().toString().endsWith("json")) {
                     KinesisStreamDescription table = streamDescriptionCodec.fromJson(Files.readAllBytes(file));
-                    String schemaName = firstNonNull(table.getSchemaName(), defaultSchema);
-                    log.debug("Kinesis table %s %s %s", schemaName, table.getTableName(), table);
-                    builder.put(new SchemaTableName(schemaName, table.getTableName()), table);
+                    String schemaName = firstNonNull(table.schemaName(), defaultSchema);
+                    log.debug("Kinesis table %s %s %s", schemaName, table.tableName(), table);
+                    builder.put(new SchemaTableName(schemaName, table.tableName()), table);
                 }
             }
 

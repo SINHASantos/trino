@@ -13,12 +13,14 @@
  */
 package io.trino.parquet.reader;
 
+import io.trino.parquet.ParquetReaderOptions;
 import io.trino.parquet.PrimitiveField;
 import io.trino.parquet.reader.flat.FlatColumnReader;
 import org.apache.parquet.column.ColumnDescriptor;
 import org.apache.parquet.schema.PrimitiveType;
 import org.testng.annotations.Test;
 
+import static io.trino.memory.context.AggregatedMemoryContext.newSimpleAggregatedMemoryContext;
 import static io.trino.spi.type.IntegerType.INTEGER;
 import static org.apache.parquet.schema.PrimitiveType.PrimitiveTypeName.INT32;
 import static org.apache.parquet.schema.Type.Repetition.OPTIONAL;
@@ -28,30 +30,30 @@ import static org.joda.time.DateTimeZone.UTC;
 public class TestColumnReaderFactory
 {
     @Test
-    public void testUseBatchedColumnReaders()
+    public void testTopLevelPrimitiveFields()
     {
-        PrimitiveField field = new PrimitiveField(
-                INTEGER,
-                false,
-                new ColumnDescriptor(new String[] {"test"}, new PrimitiveType(OPTIONAL, INT32, "test"), 0, 1),
-                0);
-        assertThat(ColumnReaderFactory.create(field, UTC, false))
-                .isNotInstanceOf(FlatColumnReader.class);
-        assertThat(ColumnReaderFactory.create(field, UTC, true))
-                .isInstanceOf(FlatColumnReader.class);
-    }
+        ColumnReaderFactory columnReaderFactory = new ColumnReaderFactory(UTC, new ParquetReaderOptions());
+        PrimitiveType primitiveType = new PrimitiveType(OPTIONAL, INT32, "test");
 
-    @Test
-    public void testNestedColumnReaders()
-    {
-        PrimitiveField field = new PrimitiveField(
+        PrimitiveField topLevelRepeatedPrimitiveField = new PrimitiveField(
+                INTEGER,
+                true,
+                new ColumnDescriptor(new String[] {"topLevelRepeatedPrimitiveField test"}, primitiveType, 1, 1),
+                0);
+        assertThat(columnReaderFactory.create(topLevelRepeatedPrimitiveField, newSimpleAggregatedMemoryContext())).isInstanceOf(NestedColumnReader.class);
+
+        PrimitiveField topLevelOptionalPrimitiveField = new PrimitiveField(
                 INTEGER,
                 false,
-                new ColumnDescriptor(new String[] {"level1", "level2"}, new PrimitiveType(OPTIONAL, INT32, "test"), 1, 2),
+                new ColumnDescriptor(new String[] {"topLevelRequiredPrimitiveField test"}, primitiveType, 0, 1),
                 0);
-        assertThat(ColumnReaderFactory.create(field, UTC, false))
-                .isNotInstanceOf(FlatColumnReader.class);
-        assertThat(ColumnReaderFactory.create(field, UTC, true))
-                .isNotInstanceOf(FlatColumnReader.class);
+        assertThat(columnReaderFactory.create(topLevelOptionalPrimitiveField, newSimpleAggregatedMemoryContext())).isInstanceOf(FlatColumnReader.class);
+
+        PrimitiveField topLevelRequiredPrimitiveField = new PrimitiveField(
+                INTEGER,
+                true,
+                new ColumnDescriptor(new String[] {"topLevelRequiredPrimitiveField test"}, primitiveType, 0, 0),
+                0);
+        assertThat(columnReaderFactory.create(topLevelRequiredPrimitiveField, newSimpleAggregatedMemoryContext())).isInstanceOf(FlatColumnReader.class);
     }
 }

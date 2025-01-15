@@ -19,6 +19,7 @@ import io.airlift.slice.Slices;
 import java.util.ArrayList;
 import java.util.List;
 
+import static io.airlift.slice.SizeOf.sizeOf;
 import static java.util.Objects.requireNonNull;
 
 /**
@@ -32,7 +33,6 @@ import static java.util.Objects.requireNonNull;
  * The offset array is compatible with VariableWidthBlock.offsets field, i.e., the
  * first value is always 0 and the last (number of positions + 1) is equal to
  * the last offset + lest position length.
- * <p>
  */
 public class BinaryBuffer
 {
@@ -73,6 +73,11 @@ public class BinaryBuffer
         offsets[offset + 1] = offsets[offset] + slice.length();
     }
 
+    public void addChunk(Slice slice)
+    {
+        chunks.add(slice);
+    }
+
     public Slice asSlice()
     {
         if (chunks.size() == 1) {
@@ -101,5 +106,14 @@ public class BinaryBuffer
     public int getValueCount()
     {
         return offsets.length - 1;
+    }
+
+    public long getRetainedSize()
+    {
+        long chunksSizeInBytes = 0;
+        for (Slice slice : chunks) {
+            chunksSizeInBytes += slice.getRetainedSize();
+        }
+        return sizeOf(offsets) + chunksSizeInBytes;
     }
 }

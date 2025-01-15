@@ -18,6 +18,7 @@ import io.trino.matching.Captures;
 import io.trino.matching.Pattern;
 import io.trino.plugin.base.aggregation.AggregateFunctionRule;
 import io.trino.plugin.jdbc.JdbcExpression;
+import io.trino.plugin.jdbc.expression.ParameterizedExpression;
 import io.trino.spi.connector.AggregateFunction;
 import io.trino.spi.expression.Variable;
 
@@ -28,7 +29,7 @@ import static io.trino.matching.Capture.newCapture;
 import static io.trino.plugin.base.aggregation.AggregateFunctionPatterns.basicAggregation;
 import static io.trino.plugin.base.aggregation.AggregateFunctionPatterns.functionName;
 import static io.trino.plugin.base.aggregation.AggregateFunctionPatterns.singleArgument;
-import static io.trino.plugin.base.aggregation.AggregateFunctionPatterns.variable;
+import static io.trino.plugin.base.expression.ConnectorExpressionPatterns.variable;
 import static io.trino.plugin.sqlserver.SqlServerClient.BIGINT_TYPE;
 import static io.trino.spi.type.BigintType.BIGINT;
 import static java.lang.String.format;
@@ -37,7 +38,7 @@ import static java.lang.String.format;
  * Implements specialized version of {@code count(x)} that returns bigint in SQL Server.
  */
 public class ImplementSqlServerCountBig
-        implements AggregateFunctionRule<JdbcExpression, String>
+        implements AggregateFunctionRule<JdbcExpression, ParameterizedExpression>
 {
     private static final Capture<Variable> ARGUMENT = newCapture();
 
@@ -50,13 +51,15 @@ public class ImplementSqlServerCountBig
     }
 
     @Override
-    public Optional<JdbcExpression> rewrite(AggregateFunction aggregateFunction, Captures captures, RewriteContext<String> context)
+    public Optional<JdbcExpression> rewrite(AggregateFunction aggregateFunction, Captures captures, RewriteContext<ParameterizedExpression> context)
     {
         Variable argument = captures.get(ARGUMENT);
         verify(aggregateFunction.getOutputType() == BIGINT);
 
+        ParameterizedExpression rewrittenArgument = context.rewriteExpression(argument).orElseThrow();
         return Optional.of(new JdbcExpression(
-                format("count_big(%s)", context.rewriteExpression(argument).orElseThrow()),
+                format("count_big(%s)", rewrittenArgument.expression()),
+                rewrittenArgument.parameters(),
                 BIGINT_TYPE));
     }
 }

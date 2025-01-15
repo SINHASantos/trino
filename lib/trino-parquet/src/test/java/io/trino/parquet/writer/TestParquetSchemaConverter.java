@@ -18,7 +18,7 @@ import org.apache.parquet.schema.GroupType;
 import org.apache.parquet.schema.LogicalTypeAnnotation;
 import org.apache.parquet.schema.PrimitiveType;
 import org.apache.parquet.schema.Type;
-import org.testng.annotations.Test;
+import org.junit.jupiter.api.Test;
 
 import java.math.BigInteger;
 
@@ -133,11 +133,12 @@ public class TestParquetSchemaConverter
      * Lists
      * LIST is used to annotate types that should be interpreted as lists.
      * LIST must always annotate a 3-level structure:
-     *
+     * {@code
      * <list-repetition> group <name> (LIST) {
      *   repeated group list {
      *     <element-repetition> <element-type> element;
      *   }
+     * }
      * }
      */
     @Test

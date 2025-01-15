@@ -33,7 +33,7 @@ import static io.trino.decoder.json.JsonRowDecoderFactory.throwUnsupportedColumn
 import static io.trino.spi.StandardErrorCode.GENERIC_USER_ERROR;
 import static io.trino.spi.type.DateType.DATE;
 import static io.trino.spi.type.TimeType.TIME_MILLIS;
-import static io.trino.spi.type.TimeWithTimeZoneType.TIME_WITH_TIME_ZONE;
+import static io.trino.spi.type.TimeWithTimeZoneType.TIME_TZ_MILLIS;
 import static io.trino.spi.type.TimeZoneKey.getTimeZoneKey;
 import static io.trino.spi.type.TimestampType.TIMESTAMP_MILLIS;
 import static io.trino.spi.type.TimestampWithTimeZoneType.TIMESTAMP_TZ_MILLIS;
@@ -43,14 +43,14 @@ import static java.util.Objects.requireNonNull;
 /**
  * Custom date format decoder.
  * <p>
- * <tt>formatHint</tt> uses {@link org.joda.time.format.DateTimeFormatter} format.
+ * {@code formatHint} uses {@link org.joda.time.format.DateTimeFormatter} format.
  * <p>
  * Uses hardcoded UTC timezone and english locale.
  */
 public class CustomDateTimeJsonFieldDecoder
         implements JsonFieldDecoder
 {
-    private static final Set<Type> SUPPORTED_TYPES = ImmutableSet.of(DATE, TIME_MILLIS, TIME_WITH_TIME_ZONE, TIMESTAMP_MILLIS, TIMESTAMP_TZ_MILLIS);
+    private static final Set<Type> SUPPORTED_TYPES = ImmutableSet.of(DATE, TIME_MILLIS, TIME_TZ_MILLIS, TIMESTAMP_MILLIS, TIMESTAMP_TZ_MILLIS);
 
     private final DecoderColumnHandle columnHandle;
     private final DateTimeFormatter formatter;

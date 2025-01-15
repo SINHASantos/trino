@@ -13,8 +13,7 @@
  */
 package io.trino.plugin.bigquery;
 
-import com.fasterxml.jackson.annotation.JsonCreator;
-import com.fasterxml.jackson.annotation.JsonProperty;
+import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.google.common.collect.ImmutableList;
 import io.trino.spi.connector.ConnectorInsertTableHandle;
 import io.trino.spi.type.Type;
@@ -24,40 +23,27 @@ import java.util.List;
 import static com.google.common.base.Preconditions.checkArgument;
 import static java.util.Objects.requireNonNull;
 
-public class BigQueryInsertTableHandle
+public record BigQueryInsertTableHandle(
+        RemoteTableName remoteTableName,
+        List<String> columnNames,
+        List<Type> columnTypes,
+        String temporaryTableName,
+        String pageSinkIdColumnName)
         implements ConnectorInsertTableHandle
 {
-    private final RemoteTableName remoteTableName;
-    private final List<String> columnNames;
-    private final List<Type> columnTypes;
-
-    @JsonCreator
-    public BigQueryInsertTableHandle(
-            @JsonProperty("remoteTableName") RemoteTableName remoteTableName,
-            @JsonProperty("columnNames") List<String> columnNames,
-            @JsonProperty("columnTypes") List<Type> columnTypes)
+    public BigQueryInsertTableHandle
     {
-        this.remoteTableName = requireNonNull(remoteTableName, "remoteTableName is null");
-        this.columnNames = ImmutableList.copyOf(requireNonNull(columnNames, "columnNames is null"));
-        this.columnTypes = ImmutableList.copyOf(requireNonNull(columnTypes, "columnTypes is null"));
+        requireNonNull(remoteTableName, "remoteTableName is null");
+        columnNames = ImmutableList.copyOf(requireNonNull(columnNames, "columnNames is null"));
+        columnTypes = ImmutableList.copyOf(requireNonNull(columnTypes, "columnTypes is null"));
         checkArgument(columnNames.size() == columnTypes.size(), "columnNames and columnTypes must have the same size");
+        requireNonNull(temporaryTableName, "temporaryTableName is null");
+        requireNonNull(pageSinkIdColumnName, "pageSinkIdColumnName is null");
     }
 
-    @JsonProperty
-    public RemoteTableName getRemoteTableName()
+    @JsonIgnore
+    public RemoteTableName getTemporaryRemoteTableName()
     {
-        return remoteTableName;
-    }
-
-    @JsonProperty
-    public List<String> getColumnNames()
-    {
-        return columnNames;
-    }
-
-    @JsonProperty
-    public List<Type> getColumnTypes()
-    {
-        return columnTypes;
+        return new RemoteTableName(remoteTableName.projectId(), remoteTableName.datasetName(), temporaryTableName);
     }
 }

@@ -14,6 +14,7 @@
 package io.trino.plugin.pinot;
 
 import com.google.common.collect.Iterables;
+import com.google.inject.Inject;
 import io.airlift.log.Logger;
 import io.trino.plugin.pinot.client.PinotClient;
 import io.trino.spi.ErrorCode;
@@ -31,8 +32,6 @@ import io.trino.spi.connector.DynamicFilter;
 import io.trino.spi.connector.FixedSplitSource;
 import org.apache.pinot.spi.config.table.TableType;
 
-import javax.inject.Inject;
-
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
@@ -46,7 +45,6 @@ import static io.trino.plugin.pinot.PinotSplit.createBrokerSplit;
 import static io.trino.plugin.pinot.PinotSplit.createSegmentSplit;
 import static io.trino.spi.ErrorType.USER_ERROR;
 import static java.lang.String.format;
-import static java.util.Collections.singletonList;
 import static java.util.Objects.requireNonNull;
 
 public class PinotSplitManager
@@ -64,18 +62,18 @@ public class PinotSplitManager
         this.pinotClient = requireNonNull(pinotClient, "pinotClient is null");
     }
 
-    protected ConnectorSplitSource generateSplitForBrokerBasedScan(PinotTableHandle pinotTableHandle)
+    protected ConnectorSplitSource generateSplitForBrokerBasedScan()
     {
-        return new FixedSplitSource(singletonList(createBrokerSplit()));
+        return new FixedSplitSource(createBrokerSplit());
     }
 
     protected ConnectorSplitSource generateSplitsForSegmentBasedScan(
             PinotTableHandle tableHandle,
             ConnectorSession session)
     {
-        String tableName = tableHandle.getTableName();
+        String tableName = tableHandle.tableName();
         Map<String, Map<String, List<String>>> routingTable = pinotClient.getRoutingTableForTable(tableName);
-        LOG.info("Got routing table for %s: %s", tableName, routingTable);
+        LOG.debug("Got routing table for %s: %s", tableName, routingTable);
         List<ConnectorSplit> splits = new ArrayList<>();
         if (!routingTable.isEmpty()) {
             PinotClient.TimeBoundary timeBoundary = new PinotClient.TimeBoundary(null, null);
@@ -174,12 +172,13 @@ public class PinotSplitManager
             }
             return generateSplitsForSegmentBasedScan(pinotTableHandle, session);
         }
-        return generateSplitForBrokerBasedScan(pinotTableHandle);
+        return generateSplitForBrokerBasedScan();
     }
 
     private static boolean isBrokerQuery(ConnectorSession session, PinotTableHandle tableHandle)
     {
-        return tableHandle.getQuery().isPresent() ||
-                (isPreferBrokerQueries(session) && tableHandle.getLimit().orElse(Integer.MAX_VALUE) < getNonAggregateLimitForBrokerQueries(session));
+        return tableHandle.query().isPresent() ||
+                tableHandle.limit().orElse(Integer.MAX_VALUE) < getNonAggregateLimitForBrokerQueries(session) ||
+                isPreferBrokerQueries(session);
     }
 }

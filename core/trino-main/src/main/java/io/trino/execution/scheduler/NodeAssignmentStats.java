@@ -47,7 +47,7 @@ public final class NodeAssignmentStats
 
         // pre-populate the assignment counts with zeros
         if (existingTasks.size() < nodeMapSize) {
-            Function<String, PendingSplitInfo> createEmptySplitInfo = ignored -> new PendingSplitInfo(PartitionedSplitsInfo.forZeroSplits(), 0);
+            Function<String, PendingSplitInfo> createEmptySplitInfo = _ -> new PendingSplitInfo(PartitionedSplitsInfo.forZeroSplits(), 0);
             for (InternalNode node : nodeMap.getNodesByHostAndPort().values()) {
                 stageQueuedSplitInfo.computeIfAbsent(node.getNodeIdentifier(), createEmptySplitInfo);
             }
@@ -66,7 +66,12 @@ public final class NodeAssignmentStats
 
     public long getQueuedSplitsWeightForStage(InternalNode node)
     {
-        PendingSplitInfo stageInfo = stageQueuedSplitInfo.get(node.getNodeIdentifier());
+        return getQueuedSplitsWeightForStage(node.getNodeIdentifier());
+    }
+
+    public long getQueuedSplitsWeightForStage(String nodeId)
+    {
+        PendingSplitInfo stageInfo = stageQueuedSplitInfo.get(nodeId);
         return stageInfo == null ? 0 : stageInfo.getQueuedSplitsWeight();
     }
 

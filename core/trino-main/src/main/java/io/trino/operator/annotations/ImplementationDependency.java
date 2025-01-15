@@ -24,7 +24,6 @@ import io.trino.spi.function.InvocationConvention;
 import io.trino.spi.function.LiteralParameter;
 import io.trino.spi.function.OperatorDependency;
 import io.trino.spi.function.OperatorType;
-import io.trino.spi.function.QualifiedFunctionName;
 import io.trino.spi.function.TypeParameter;
 import io.trino.spi.type.TypeSignature;
 import io.trino.spi.type.TypeSignatureParameter;
@@ -41,6 +40,7 @@ import java.util.Set;
 
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.collect.ImmutableList.toImmutableList;
+import static io.trino.metadata.GlobalFunctionCatalog.builtinFunctionName;
 import static io.trino.operator.annotations.FunctionsParserHelper.containsImplementationDependencyAnnotation;
 import static io.trino.sql.analyzer.TypeSignatureTranslator.parseTypeSignature;
 
@@ -108,18 +108,16 @@ public interface ImplementationDependency
                 return new LiteralImplementationDependency(((LiteralParameter) annotation).value());
             }
 
-            if (annotation instanceof FunctionDependency) {
-                FunctionDependency functionDependency = (FunctionDependency) annotation;
+            if (annotation instanceof FunctionDependency functionDependency) {
                 return new FunctionImplementationDependency(
-                        QualifiedFunctionName.of(functionDependency.name()),
+                        builtinFunctionName(functionDependency.name()),
                         Arrays.stream(functionDependency.argumentTypes())
                                 .map(signature -> parseTypeSignature(signature, literalParameters))
                                 .collect(toImmutableList()),
                         toInvocationConvention(functionDependency.convention()),
                         type);
             }
-            if (annotation instanceof OperatorDependency) {
-                OperatorDependency operatorDependency = (OperatorDependency) annotation;
+            if (annotation instanceof OperatorDependency operatorDependency) {
                 OperatorType operator = operatorDependency.operator();
                 checkArgument(operator != OperatorType.CAST && operator != OperatorType.SATURATED_FLOOR_CAST, "%s not supported for OperatorDependency", operator);
                 return new OperatorImplementationDependency(
@@ -130,8 +128,7 @@ public interface ImplementationDependency
                         toInvocationConvention(operatorDependency.convention()),
                         type);
             }
-            if (annotation instanceof CastDependency) {
-                CastDependency castDependency = (CastDependency) annotation;
+            if (annotation instanceof CastDependency castDependency) {
                 return new CastImplementationDependency(
                         parseTypeSignature(castDependency.fromType(), literalParameters),
                         parseTypeSignature(castDependency.toType(), literalParameters),

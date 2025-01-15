@@ -13,12 +13,14 @@
  */
 package io.trino.plugin.clickhouse;
 
+import com.clickhouse.jdbc.ClickHouseDriver;
 import com.google.inject.Binder;
 import com.google.inject.Module;
 import com.google.inject.Provides;
 import com.google.inject.Scopes;
 import com.google.inject.Singleton;
 import io.airlift.configuration.ConfigBinder;
+import io.opentelemetry.api.OpenTelemetry;
 import io.trino.plugin.jdbc.BaseJdbcConfig;
 import io.trino.plugin.jdbc.ConnectionFactory;
 import io.trino.plugin.jdbc.DecimalModule;
@@ -27,9 +29,14 @@ import io.trino.plugin.jdbc.ForBaseJdbc;
 import io.trino.plugin.jdbc.JdbcClient;
 import io.trino.plugin.jdbc.JdbcMetadataConfig;
 import io.trino.plugin.jdbc.credential.CredentialProvider;
+import io.trino.plugin.jdbc.ptf.Query;
+import io.trino.spi.function.table.ConnectorTableFunction;
 
-import java.sql.Driver;
+import java.util.Properties;
 
+import static com.clickhouse.client.config.ClickHouseClientOption.USE_BINARY_STRING;
+import static com.clickhouse.jdbc.JdbcConfig.PROP_EXTERNAL_DATABASE;
+import static com.google.inject.multibindings.Multibinder.newSetBinder;
 import static io.airlift.configuration.ConfigBinder.configBinder;
 import static io.trino.plugin.clickhouse.ClickHouseClient.DEFAULT_DOMAIN_COMPACTION_THRESHOLD;
 import static io.trino.plugin.jdbc.JdbcModule.bindSessionPropertiesProvider;
@@ -47,21 +54,25 @@ public class ClickHouseClientModule
         bindTablePropertiesProvider(binder, ClickHouseTableProperties.class);
         configBinder(binder).bindConfigDefaults(JdbcMetadataConfig.class, config -> config.setDomainCompactionThreshold(DEFAULT_DOMAIN_COMPACTION_THRESHOLD));
         binder.install(new DecimalModule());
+        newSetBinder(binder, ConnectorTableFunction.class).addBinding().toProvider(Query.class).in(Scopes.SINGLETON);
     }
 
     @Provides
     @Singleton
     @ForBaseJdbc
-    public static ConnectionFactory createConnectionFactory(ClickHouseConfig clickHouseConfig, BaseJdbcConfig config, CredentialProvider credentialProvider)
+    public static ConnectionFactory createConnectionFactory(BaseJdbcConfig config, CredentialProvider credentialProvider, OpenTelemetry openTelemetry)
     {
-        return new ClickHouseConnectionFactory(new DriverConnectionFactory(createDriver(clickHouseConfig), config, credentialProvider));
-    }
-
-    private static Driver createDriver(ClickHouseConfig config)
-    {
-        if (config.isLegacyDriver()) {
-            return new ru.yandex.clickhouse.ClickHouseDriver();
-        }
-        return new com.clickhouse.jdbc.ClickHouseDriver();
+        Properties properties = new Properties();
+        // The connector expects byte array for FixedString and String types
+        properties.setProperty(USE_BINARY_STRING.getKey(), "true");
+        // externalDatabase=false is needed because Schema listing fetch is extremely slow on Clickhouse-server 24.3+
+        // https://github.com/ClickHouse/clickhouse-java/issues/1245
+        // https://github.com/ClickHouse/clickhouse-java/issues/1584
+        // in Clickhouse itself it has been left `true` by default only for backward compatibility.
+        properties.setProperty(PROP_EXTERNAL_DATABASE, "false");
+        return new ClickHouseConnectionFactory(DriverConnectionFactory.builder(new ClickHouseDriver(), config.getConnectionUrl(), credentialProvider)
+                .setConnectionProperties(properties)
+                .setOpenTelemetry(openTelemetry)
+                .build());
     }
 }

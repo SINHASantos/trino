@@ -13,12 +13,15 @@
  */
 package io.trino.operator;
 
+import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Ticker;
 import com.google.common.collect.ImmutableList;
 import com.google.common.io.LittleEndianDataInputStream;
 import com.google.common.net.MediaType;
 import com.google.common.util.concurrent.FutureCallback;
 import com.google.common.util.concurrent.Futures;
+import com.google.errorprone.annotations.ThreadSafe;
+import com.google.errorprone.annotations.concurrent.GuardedBy;
 import io.airlift.http.client.HttpClient;
 import io.airlift.http.client.HttpClient.HttpResponseFuture;
 import io.airlift.http.client.HttpStatus;
@@ -37,11 +40,8 @@ import io.trino.execution.buffer.PagesSerdeUtil;
 import io.trino.server.remotetask.Backoff;
 import io.trino.spi.TrinoException;
 import io.trino.spi.TrinoTransportException;
+import jakarta.annotation.Nullable;
 import org.joda.time.DateTime;
-
-import javax.annotation.Nullable;
-import javax.annotation.concurrent.GuardedBy;
-import javax.annotation.concurrent.ThreadSafe;
 
 import java.io.BufferedReader;
 import java.io.Closeable;
@@ -80,7 +80,7 @@ import static io.trino.server.InternalHeaders.TRINO_PAGE_NEXT_TOKEN;
 import static io.trino.server.InternalHeaders.TRINO_PAGE_TOKEN;
 import static io.trino.server.InternalHeaders.TRINO_TASK_FAILED;
 import static io.trino.server.InternalHeaders.TRINO_TASK_INSTANCE_ID;
-import static io.trino.server.PagesResponseWriter.SERIALIZED_PAGES_MAGIC;
+import static io.trino.server.PagesInputStreamFactory.SERIALIZED_PAGES_MAGIC;
 import static io.trino.spi.HostAddress.fromUri;
 import static io.trino.spi.StandardErrorCode.GENERIC_INTERNAL_ERROR;
 import static io.trino.spi.StandardErrorCode.REMOTE_BUFFER_CLOSE_FAILED;
@@ -104,7 +104,7 @@ public final class HttpPageBufferClient
      * For each request, the addPage method will be called zero or more times,
      * followed by either requestComplete or clientFinished (if buffer complete).  If the client is
      * closed, requestComplete or bufferFinished may never be called.
-     * <p/>
+     * <p>
      * <b>NOTE:</b> Implementations of this interface are not allowed to perform
      * blocking operations.
      */
@@ -144,6 +144,10 @@ public final class HttpPageBufferClient
     private boolean completed;
     @GuardedBy("this")
     private String taskInstanceId;
+    private volatile long lastRequestStartNanos;
+    private volatile long lastRequestDurationMillis;
+    // it is synchronized on `this` for update
+    private volatile long averageRequestSizeInBytes;
 
     private final AtomicLong rowsReceived = new AtomicLong();
     private final AtomicInteger pagesReceived = new AtomicInteger();
@@ -153,9 +157,11 @@ public final class HttpPageBufferClient
 
     private final AtomicInteger requestsScheduled = new AtomicInteger();
     private final AtomicInteger requestsCompleted = new AtomicInteger();
+    private final AtomicInteger requestsSucceeded = new AtomicInteger();
     private final AtomicInteger requestsFailed = new AtomicInteger();
 
     private final Executor pageBufferClientCallbackExecutor;
+    private final Ticker ticker;
 
     public HttpPageBufferClient(
             String selfAddress,
@@ -212,6 +218,7 @@ public final class HttpPageBufferClient
         requireNonNull(maxErrorDuration, "maxErrorDuration is null");
         requireNonNull(ticker, "ticker is null");
         this.backoff = new Backoff(maxErrorDuration, ticker);
+        this.ticker = ticker;
     }
 
     public synchronized PageBufferClientStatus getStatus()
@@ -251,12 +258,18 @@ public final class HttpPageBufferClient
                 requestsScheduled.get(),
                 requestsCompleted.get(),
                 requestsFailed.get(),
+                requestsSucceeded.get(),
                 httpRequestState);
     }
 
     public TaskId getRemoteTaskId()
     {
         return remoteTaskId;
+    }
+
+    public long getAverageRequestSizeInBytes()
+    {
+        return averageRequestSizeInBytes;
     }
 
     public synchronized boolean isRunning()
@@ -307,6 +320,7 @@ public final class HttpPageBufferClient
                 initiateRequest();
             }
             catch (Throwable t) {
+                assertNotHoldsLock(HttpPageBufferClient.this);
                 // should not happen, but be safe and fail the operator
                 clientCallback.clientFailed(HttpPageBufferClient.this, t);
             }
@@ -314,6 +328,11 @@ public final class HttpPageBufferClient
 
         lastUpdate = DateTime.now();
         requestsScheduled.incrementAndGet();
+    }
+
+    public long getLastRequestDurationMillis()
+    {
+        return lastRequestDurationMillis;
     }
 
     private synchronized void initiateRequest()
@@ -336,6 +355,7 @@ public final class HttpPageBufferClient
     private synchronized void sendGetResults()
     {
         URI uri = HttpUriBuilder.uriBuilderFrom(location).appendPath(String.valueOf(token)).build();
+        lastRequestStartNanos = ticker.read();
         HttpResponseFuture<PagesResponse> resultFuture = httpClient.executeAsync(
                 prepareGet()
                         .setHeader(TRINO_MAX_SIZE, maxResponseSize.toString())
@@ -348,8 +368,8 @@ public final class HttpPageBufferClient
             @Override
             public void onSuccess(PagesResponse result)
             {
-                assertNotHoldsLock(this);
-
+                assertNotHoldsLock(HttpPageBufferClient.this);
+                lastRequestDurationMillis = (ticker.read() - lastRequestStartNanos) / 1_000_000;
                 backoff.success();
 
                 List<Slice> pages;
@@ -434,6 +454,8 @@ public final class HttpPageBufferClient
                     }
                 }
                 requestsCompleted.incrementAndGet();
+                long responseSize = pages.stream().mapToLong(Slice::length).sum();
+                requestSucceeded(responseSize);
 
                 synchronized (HttpPageBufferClient.this) {
                     // client is complete, acknowledge it by sending it a delete in the next request
@@ -452,7 +474,9 @@ public final class HttpPageBufferClient
             public void onFailure(Throwable t)
             {
                 log.debug("Request to %s failed %s", uri, t);
-                assertNotHoldsLock(this);
+                assertNotHoldsLock(HttpPageBufferClient.this);
+
+                lastRequestDurationMillis = (ticker.read() - lastRequestStartNanos) / 1_000_000;
 
                 if (t instanceof ChecksumVerificationException) {
                     switch (dataIntegrityVerification) {
@@ -485,6 +509,14 @@ public final class HttpPageBufferClient
         }, pageBufferClientCallbackExecutor);
     }
 
+    @VisibleForTesting
+    synchronized void requestSucceeded(long responseSize)
+    {
+        int successfulRequests = requestsSucceeded.incrementAndGet();
+        // AVG_n = AVG_(n-1) * (n-1)/n + VALUE_n / n
+        averageRequestSizeInBytes = (long) ((1.0 * averageRequestSizeInBytes * (successfulRequests - 1)) + responseSize) / successfulRequests;
+    }
+
     private synchronized void destroyTaskResults()
     {
         HttpResponseFuture<StatusResponse> resultFuture = httpClient.executeAsync(prepareDelete().setUri(location).build(), createStatusResponseHandler());
@@ -494,9 +526,9 @@ public final class HttpPageBufferClient
             @Override
             public void onSuccess(@Nullable StatusResponse result)
             {
-                assertNotHoldsLock(this);
+                assertNotHoldsLock(HttpPageBufferClient.this);
 
-                if (result.getStatusCode() != NO_CONTENT.code()) {
+                if (result != null && result.getStatusCode() != NO_CONTENT.code()) {
                     onFailure(new TrinoTransportException(
                             REMOTE_BUFFER_CLOSE_FAILED,
                             fromUri(location),
@@ -519,7 +551,7 @@ public final class HttpPageBufferClient
             @Override
             public void onFailure(Throwable t)
             {
-                assertNotHoldsLock(this);
+                assertNotHoldsLock(HttpPageBufferClient.this);
 
                 log.error("Request to delete %s failed %s", location, t);
                 if (!(t instanceof TrinoException) && backoff.failure()) {
@@ -538,13 +570,14 @@ public final class HttpPageBufferClient
     @SuppressWarnings("checkstyle:IllegalToken")
     private static void assertNotHoldsLock(Object lock)
     {
+        // By design, clientCallback must not be called when holding a lock on HttpPageBufferClient.this.
+        // This check enforce the requirement and help reason about this invariant locally.
         assert !Thread.holdsLock(lock) : "Cannot execute this method while holding a lock";
     }
 
     private void handleFailure(Throwable t, HttpResponseFuture<?> expectedFuture)
     {
-        // Cannot delegate to other callback while holding a lock on this
-        assertNotHoldsLock(this);
+        assertNotHoldsLock(HttpPageBufferClient.this);
 
         requestsFailed.incrementAndGet();
         requestsCompleted.incrementAndGet();
@@ -574,11 +607,7 @@ public final class HttpPageBufferClient
 
         HttpPageBufferClient that = (HttpPageBufferClient) o;
 
-        if (!location.equals(that.location)) {
-            return false;
-        }
-
-        return true;
+        return location.equals(that.location);
     }
 
     @Override

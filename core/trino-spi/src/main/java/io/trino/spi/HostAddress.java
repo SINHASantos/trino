@@ -15,7 +15,6 @@ package io.trino.spi;
 
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonValue;
-import org.openjdk.jol.info.ClassLayout;
 
 import java.net.InetAddress;
 import java.net.URI;
@@ -27,13 +26,12 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 import static io.airlift.slice.SizeOf.estimatedSizeOf;
-import static java.lang.Math.toIntExact;
+import static io.airlift.slice.SizeOf.instanceSize;
 import static java.util.Collections.unmodifiableList;
 import static java.util.Objects.requireNonNull;
 
 /**
  * An immutable representation of a host and port.
- * <p>
  * <p>Example usage:
  * <pre>
  * HostAndPort hp = HostAndPort.fromString("[2001:db8::1]")
@@ -54,7 +52,6 @@ import static java.util.Objects.requireNonNull;
  * <li>[2001:db8::1]:80  - {@link #getHostText()} omits brackets
  * <li>2001:db8::1
  * </ul>
- * <p>
  * <p>Note that this is not an exhaustive list, because these methods are only
  * concerned with brackets, colons, and port numbers.  Full validation of the
  * host field (if desired) is the caller's responsibility.
@@ -64,7 +61,7 @@ import static java.util.Objects.requireNonNull;
  */
 public class HostAddress
 {
-    private static final int INSTANCE_SIZE = toIntExact(ClassLayout.parseClass(HostAddress.class).instanceSize());
+    private static final int INSTANCE_SIZE = instanceSize(HostAddress.class);
 
     /**
      * Magic value indicating the absence of a port number.
@@ -92,7 +89,6 @@ public class HostAddress
      * represent the hostname or IPv4/IPv6 literal.
      * <p>
      * <p>A successful parse does not imply any degree of sanity in this field.
-     * For additional validation, see the {@link com.google.common.net.HostSpecifier} class.
      */
     public String getHostText()
     {
@@ -275,8 +271,8 @@ public class HostAddress
             return false;
         }
         HostAddress other = (HostAddress) obj;
-        return Objects.equals(this.host, other.host) &&
-                Objects.equals(this.port, other.port);
+        return this.port == other.port &&
+               Objects.equals(this.host, other.host);
     }
 
     /**

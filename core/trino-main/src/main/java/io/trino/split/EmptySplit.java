@@ -15,21 +15,19 @@ package io.trino.split;
 
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonProperty;
-import com.google.common.collect.ImmutableList;
-import io.trino.connector.CatalogHandle;
-import io.trino.spi.HostAddress;
+import com.google.common.collect.ImmutableMap;
+import io.trino.spi.connector.CatalogHandle;
 import io.trino.spi.connector.ConnectorSplit;
-import org.openjdk.jol.info.ClassLayout;
 
-import java.util.List;
+import java.util.Map;
 
-import static java.lang.Math.toIntExact;
+import static io.airlift.slice.SizeOf.instanceSize;
 import static java.util.Objects.requireNonNull;
 
 public class EmptySplit
         implements ConnectorSplit
 {
-    private static final int INSTANCE_SIZE = toIntExact(ClassLayout.parseClass(EmptySplit.class).instanceSize());
+    private static final int INSTANCE_SIZE = instanceSize(EmptySplit.class);
 
     private final CatalogHandle catalogHandle;
 
@@ -41,21 +39,9 @@ public class EmptySplit
     }
 
     @Override
-    public boolean isRemotelyAccessible()
+    public Map<String, String> getSplitInfo()
     {
-        return true;
-    }
-
-    @Override
-    public List<HostAddress> getAddresses()
-    {
-        return ImmutableList.of();
-    }
-
-    @Override
-    public Object getInfo()
-    {
-        return this;
+        return ImmutableMap.of();
     }
 
     @Override

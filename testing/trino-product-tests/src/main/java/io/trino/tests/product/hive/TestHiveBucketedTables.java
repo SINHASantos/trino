@@ -24,7 +24,6 @@ import io.trino.tempto.fulfillment.table.hive.HiveTableDefinition;
 import io.trino.tempto.query.QueryResult;
 import io.trino.testng.services.Flaky;
 import io.trino.tests.product.hive.util.TemporaryHiveTable;
-import org.assertj.core.api.Assertions;
 import org.testng.annotations.DataProvider;
 import org.testng.annotations.Test;
 
@@ -36,7 +35,6 @@ import static com.google.common.collect.Lists.cartesianProduct;
 import static io.trino.tempto.assertions.QueryAssert.Row.row;
 import static io.trino.tempto.assertions.QueryAssert.anyOf;
 import static io.trino.tempto.assertions.QueryAssert.assertQueryFailure;
-import static io.trino.tempto.assertions.QueryAssert.assertThat;
 import static io.trino.tempto.fulfillment.table.MutableTableRequirement.State.CREATED;
 import static io.trino.tempto.fulfillment.table.MutableTableRequirement.State.PREPARED;
 import static io.trino.tempto.fulfillment.table.MutableTablesState.mutableTablesState;
@@ -45,13 +43,13 @@ import static io.trino.tempto.fulfillment.table.hive.tpch.TpchTableDefinitions.N
 import static io.trino.tempto.query.QueryExecutor.param;
 import static io.trino.testing.TestingNames.randomNameSuffix;
 import static io.trino.tests.product.TestGroups.LARGE_QUERY;
-import static io.trino.tests.product.TpchTableResults.PRESTO_NATION_RESULT;
+import static io.trino.tests.product.TpchTableResults.TRINO_NATION_RESULT;
 import static io.trino.tests.product.hive.BucketingType.BUCKETED_DEFAULT;
 import static io.trino.tests.product.hive.BucketingType.BUCKETED_V1;
 import static io.trino.tests.product.hive.BucketingType.BUCKETED_V2;
 import static io.trino.tests.product.hive.util.TemporaryHiveTable.temporaryHiveTable;
-import static io.trino.tests.product.utils.HadoopTestUtils.ERROR_COMMITTING_WRITE_TO_HIVE_ISSUE;
-import static io.trino.tests.product.utils.HadoopTestUtils.ERROR_COMMITTING_WRITE_TO_HIVE_MATCH;
+import static io.trino.tests.product.utils.HadoopTestUtils.RETRYABLE_FAILURES_ISSUES;
+import static io.trino.tests.product.utils.HadoopTestUtils.RETRYABLE_FAILURES_MATCH;
 import static io.trino.tests.product.utils.QueryExecutors.onHive;
 import static io.trino.tests.product.utils.QueryExecutors.onTrino;
 import static io.trino.tests.product.utils.TableDefinitionUtils.mutableTableInstanceOf;
@@ -59,6 +57,7 @@ import static java.lang.String.format;
 import static java.lang.String.join;
 import static java.sql.JDBCType.VARCHAR;
 import static java.util.stream.Collectors.joining;
+import static org.assertj.core.api.Assertions.assertThat;
 
 public class TestHiveBucketedTables
         extends HiveProductTest
@@ -107,17 +106,17 @@ public class TestHiveBucketedTables
     }
 
     @Test
-    @Flaky(issue = ERROR_COMMITTING_WRITE_TO_HIVE_ISSUE, match = ERROR_COMMITTING_WRITE_TO_HIVE_MATCH)
+    @Flaky(issue = RETRYABLE_FAILURES_ISSUES, match = RETRYABLE_FAILURES_MATCH)
     public void testSelectStar()
     {
         String tableName = mutableTableInstanceOf(BUCKETED_NATION).getNameInDatabase();
         populateHiveTable(tableName, NATION.getName());
 
-        assertThat(onTrino().executeQuery("SELECT * FROM " + tableName)).matches(PRESTO_NATION_RESULT);
+        assertThat(onTrino().executeQuery("SELECT * FROM " + tableName)).matches(TRINO_NATION_RESULT);
     }
 
     @Test(groups = LARGE_QUERY)
-    @Flaky(issue = ERROR_COMMITTING_WRITE_TO_HIVE_ISSUE, match = ERROR_COMMITTING_WRITE_TO_HIVE_MATCH)
+    @Flaky(issue = RETRYABLE_FAILURES_ISSUES, match = RETRYABLE_FAILURES_MATCH)
     public void testIgnorePartitionBucketingIfNotBucketed()
     {
         String tableName = mutableTablesState().get(BUCKETED_PARTITIONED_NATION).getNameInDatabase();
@@ -135,7 +134,7 @@ public class TestHiveBucketedTables
     }
 
     @Test(groups = LARGE_QUERY)
-    @Flaky(issue = ERROR_COMMITTING_WRITE_TO_HIVE_ISSUE, match = ERROR_COMMITTING_WRITE_TO_HIVE_MATCH)
+    @Flaky(issue = RETRYABLE_FAILURES_ISSUES, match = RETRYABLE_FAILURES_MATCH)
     public void testAllowMultipleFilesPerBucket()
     {
         String tableName = mutableTablesState().get(BUCKETED_PARTITIONED_NATION).getNameInDatabase();
@@ -152,7 +151,7 @@ public class TestHiveBucketedTables
     }
 
     @Test
-    @Flaky(issue = ERROR_COMMITTING_WRITE_TO_HIVE_ISSUE, match = ERROR_COMMITTING_WRITE_TO_HIVE_MATCH)
+    @Flaky(issue = RETRYABLE_FAILURES_ISSUES, match = RETRYABLE_FAILURES_MATCH)
     public void testSelectAfterMultipleInserts()
     {
         String tableName = mutableTableInstanceOf(BUCKETED_NATION).getNameInDatabase();
@@ -170,7 +169,7 @@ public class TestHiveBucketedTables
     }
 
     @Test
-    @Flaky(issue = ERROR_COMMITTING_WRITE_TO_HIVE_ISSUE, match = ERROR_COMMITTING_WRITE_TO_HIVE_MATCH)
+    @Flaky(issue = RETRYABLE_FAILURES_ISSUES, match = RETRYABLE_FAILURES_MATCH)
     public void testSelectAfterMultipleInsertsForSortedTable()
     {
         String tableName = mutableTableInstanceOf(BUCKETED_SORTED_NATION).getNameInDatabase();
@@ -188,7 +187,7 @@ public class TestHiveBucketedTables
     }
 
     @Test
-    @Flaky(issue = ERROR_COMMITTING_WRITE_TO_HIVE_ISSUE, match = ERROR_COMMITTING_WRITE_TO_HIVE_MATCH)
+    @Flaky(issue = RETRYABLE_FAILURES_ISSUES, match = RETRYABLE_FAILURES_MATCH)
     public void testSelectAfterMultipleInsertsForPartitionedTable()
     {
         String tableName = mutableTableInstanceOf(BUCKETED_PARTITIONED_NATION).getNameInDatabase();
@@ -213,7 +212,7 @@ public class TestHiveBucketedTables
     }
 
     @Test
-    @Flaky(issue = ERROR_COMMITTING_WRITE_TO_HIVE_ISSUE, match = ERROR_COMMITTING_WRITE_TO_HIVE_MATCH)
+    @Flaky(issue = RETRYABLE_FAILURES_ISSUES, match = RETRYABLE_FAILURES_MATCH)
     public void testSelectFromEmptyBucketedTableEmptyTablesAllowed()
     {
         String tableName = mutableTableInstanceOf(BUCKETED_NATION).getNameInDatabase();
@@ -222,7 +221,7 @@ public class TestHiveBucketedTables
     }
 
     @Test
-    @Flaky(issue = ERROR_COMMITTING_WRITE_TO_HIVE_ISSUE, match = ERROR_COMMITTING_WRITE_TO_HIVE_MATCH)
+    @Flaky(issue = RETRYABLE_FAILURES_ISSUES, match = RETRYABLE_FAILURES_MATCH)
     public void testSelectFromIncompleteBucketedTableEmptyTablesAllowed()
     {
         String tableName = mutableTableInstanceOf(BUCKETED_NATION).getNameInDatabase();
@@ -235,7 +234,7 @@ public class TestHiveBucketedTables
     }
 
     @Test
-    @Flaky(issue = ERROR_COMMITTING_WRITE_TO_HIVE_ISSUE, match = ERROR_COMMITTING_WRITE_TO_HIVE_MATCH)
+    @Flaky(issue = RETRYABLE_FAILURES_ISSUES, match = RETRYABLE_FAILURES_MATCH)
     public void testInsertPartitionedBucketed()
     {
         String tableName = mutableTablesState().get(BUCKETED_NATION_PREPARED).getNameInDatabase();
@@ -251,7 +250,7 @@ public class TestHiveBucketedTables
     }
 
     @Test
-    @Flaky(issue = ERROR_COMMITTING_WRITE_TO_HIVE_ISSUE, match = ERROR_COMMITTING_WRITE_TO_HIVE_MATCH)
+    @Flaky(issue = RETRYABLE_FAILURES_ISSUES, match = RETRYABLE_FAILURES_MATCH)
     public void testCreatePartitionedBucketedTableAsSelect()
     {
         String tableName = mutableTablesState().get(BUCKETED_PARTITIONED_NATION).getNameInDatabase();
@@ -265,7 +264,7 @@ public class TestHiveBucketedTables
     }
 
     @Test
-    @Flaky(issue = ERROR_COMMITTING_WRITE_TO_HIVE_ISSUE, match = ERROR_COMMITTING_WRITE_TO_HIVE_MATCH)
+    @Flaky(issue = RETRYABLE_FAILURES_ISSUES, match = RETRYABLE_FAILURES_MATCH)
     public void testInsertIntoBucketedTables()
     {
         String tableName = mutableTablesState().get(BUCKETED_NATION).getNameInDatabase();
@@ -279,7 +278,7 @@ public class TestHiveBucketedTables
     }
 
     @Test
-    @Flaky(issue = ERROR_COMMITTING_WRITE_TO_HIVE_ISSUE, match = ERROR_COMMITTING_WRITE_TO_HIVE_MATCH)
+    @Flaky(issue = RETRYABLE_FAILURES_ISSUES, match = RETRYABLE_FAILURES_MATCH)
     public void testCreateBucketedTableAsSelect()
     {
         String tableName = mutableTablesState().get(BUCKETED_NATION_PREPARED).getNameInDatabase();
@@ -287,12 +286,12 @@ public class TestHiveBucketedTables
         // nations has 25 rows and NDV=5 for n_regionkey, setting bucket_count=10 will surely create empty buckets
         onTrino().executeQuery(format("CREATE TABLE %s WITH (bucket_count = 10, bucketed_by = ARRAY['n_regionkey']) AS SELECT * FROM %s", tableName, NATION.getName()));
 
-        assertThat(onTrino().executeQuery(format("SELECT * FROM %s", tableName))).matches(PRESTO_NATION_RESULT);
+        assertThat(onTrino().executeQuery(format("SELECT * FROM %s", tableName))).matches(TRINO_NATION_RESULT);
         assertThat(onTrino().executeQuery(format("SELECT count(*) FROM %s WHERE n_regionkey=0", tableName))).containsExactlyInOrder(row(5));
     }
 
     @Test
-    @Flaky(issue = ERROR_COMMITTING_WRITE_TO_HIVE_ISSUE, match = ERROR_COMMITTING_WRITE_TO_HIVE_MATCH)
+    @Flaky(issue = RETRYABLE_FAILURES_ISSUES, match = RETRYABLE_FAILURES_MATCH)
     public void testBucketingVersion()
     {
         String value = "Trino rocks";
@@ -303,18 +302,16 @@ public class TestHiveBucketedTables
         List<String> bucketV1NameOptions = ImmutableList.of(bucketV1);
         List<String> bucketV2NameOptions = ImmutableList.of(bucketV2Standard, bucketV2DirectInsert);
 
-        testBucketingVersion(BUCKETED_DEFAULT, value, false, (getHiveVersionMajor() < 3) ? bucketV1NameOptions : bucketV2NameOptions);
-        testBucketingVersion(BUCKETED_DEFAULT, value, true, (getHiveVersionMajor() < 3) ? bucketV1NameOptions : bucketV2NameOptions);
+        testBucketingVersion(BUCKETED_DEFAULT, value, false, bucketV2NameOptions);
+        testBucketingVersion(BUCKETED_DEFAULT, value, true, bucketV2NameOptions);
         testBucketingVersion(BUCKETED_V1, value, false, bucketV1NameOptions);
         testBucketingVersion(BUCKETED_V1, value, true, bucketV1NameOptions);
-        if (getHiveVersionMajor() >= 3) {
-            testBucketingVersion(BUCKETED_V2, value, false, bucketV2NameOptions);
-            testBucketingVersion(BUCKETED_V2, value, true, bucketV2NameOptions);
-        }
+        testBucketingVersion(BUCKETED_V2, value, false, bucketV2NameOptions);
+        testBucketingVersion(BUCKETED_V2, value, true, bucketV2NameOptions);
     }
 
     @Test(dataProvider = "testBucketingWithUnsupportedDataTypesDataProvider")
-    @Flaky(issue = ERROR_COMMITTING_WRITE_TO_HIVE_ISSUE, match = ERROR_COMMITTING_WRITE_TO_HIVE_MATCH)
+    @Flaky(issue = RETRYABLE_FAILURES_ISSUES, match = RETRYABLE_FAILURES_MATCH)
     public void testBucketingWithUnsupportedDataTypes(BucketingType bucketingType, String columnToBeBucketed)
     {
         try (TemporaryHiveTable table = temporaryHiveTable("table_with_unsupported_bucketing_types_" + randomNameSuffix())) {
@@ -337,7 +334,7 @@ public class TestHiveBucketedTables
             QueryResult showCreateTableResult = onTrino().executeQuery("SHOW CREATE TABLE " + tableName);
             assertThat(showCreateTableResult)
                     .hasRowsCount(1);
-            Assertions.assertThat((String) showCreateTableResult.getOnlyValue())
+            assertThat((String) showCreateTableResult.getOnlyValue())
                     .matches(Pattern.compile(format("\\QCREATE TABLE hive.default.%s (\n" +
                                     "   n_integer integer,\n" +
                                     "   n_decimal decimal(9, 2),\n" +
@@ -460,7 +457,7 @@ public class TestHiveBucketedTables
     {
         switch (bucketingType) {
             case BUCKETED_DEFAULT:
-                return getHiveVersionMajor() < 3 ? "1" : "2";
+                return "2";
             case BUCKETED_V1:
                 return "1";
             case BUCKETED_V2:

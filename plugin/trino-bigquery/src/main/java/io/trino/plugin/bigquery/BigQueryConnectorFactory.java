@@ -16,7 +16,10 @@ package io.trino.plugin.bigquery;
 import com.google.inject.Injector;
 import io.airlift.bootstrap.Bootstrap;
 import io.airlift.json.JsonModule;
+import io.opentelemetry.api.OpenTelemetry;
+import io.opentelemetry.api.trace.Tracer;
 import io.trino.spi.NodeManager;
+import io.trino.spi.catalog.CatalogName;
 import io.trino.spi.connector.Connector;
 import io.trino.spi.connector.ConnectorContext;
 import io.trino.spi.connector.ConnectorFactory;
@@ -24,7 +27,7 @@ import io.trino.spi.type.TypeManager;
 
 import java.util.Map;
 
-import static io.trino.plugin.base.Versions.checkSpiVersion;
+import static io.trino.plugin.base.Versions.checkStrictSpiVersionMatch;
 import static java.util.Objects.requireNonNull;
 
 public class BigQueryConnectorFactory
@@ -41,7 +44,7 @@ public class BigQueryConnectorFactory
     {
         requireNonNull(catalogName, "catalogName is null");
         requireNonNull(config, "config is null");
-        checkSpiVersion(context, this);
+        checkStrictSpiVersionMatch(context, this);
 
         Bootstrap app = new Bootstrap(
                 new JsonModule(),
@@ -49,6 +52,9 @@ public class BigQueryConnectorFactory
                 binder -> {
                     binder.bind(TypeManager.class).toInstance(context.getTypeManager());
                     binder.bind(NodeManager.class).toInstance(context.getNodeManager());
+                    binder.bind(OpenTelemetry.class).toInstance(context.getOpenTelemetry());
+                    binder.bind(Tracer.class).toInstance(context.getTracer());
+                    binder.bind(CatalogName.class).toInstance(new CatalogName(catalogName));
                 });
 
         Injector injector = app

@@ -48,7 +48,6 @@ import java.util.Arrays;
 import java.util.List;
 
 import static com.google.common.base.Preconditions.checkArgument;
-import static io.trino.spi.type.Decimals.isLongDecimal;
 import static java.util.Objects.requireNonNull;
 
 public final class BlackHolePageSourceProvider
@@ -75,12 +74,12 @@ public final class BlackHolePageSourceProvider
         ImmutableList.Builder<Type> builder = ImmutableList.builder();
 
         for (ColumnHandle column : columns) {
-            builder.add(((BlackHoleColumnHandle) column).getColumnType());
+            builder.add(((BlackHoleColumnHandle) column).columnType());
         }
         List<Type> types = builder.build();
 
-        Page page = generateZeroPage(types, table.getRowsPerPage(), table.getFieldsLength());
-        return new BlackHolePageSource(page, table.getPagesPerSplit(), executorService, table.getPageProcessingDelay());
+        Page page = generateZeroPage(types, table.rowsPerPage(), table.fieldsLength());
+        return new BlackHolePageSource(page, table.pagesPerSplit(), executorService, table.pageProcessingDelay());
     }
 
     private Page generateZeroPage(List<Type> types, int rowsCount, int fieldLength)
@@ -111,8 +110,8 @@ public final class BlackHolePageSourceProvider
         }
 
         BlockBuilder builder;
-        if (type instanceof FixedWidthType) {
-            builder = type.createBlockBuilder(null, rowsCount);
+        if (type instanceof FixedWidthType fixedWidthType) {
+            builder = fixedWidthType.createFixedSizeBlockBuilder(rowsCount);
         }
         else {
             builder = type.createBlockBuilder(null, rowsCount, slice.length());
@@ -133,7 +132,7 @@ public final class BlackHolePageSourceProvider
                 requireNonNull(slice, "slice is null");
                 type.writeSlice(builder, slice, 0, slice.length());
             }
-            else if (isLongDecimal(type)) {
+            else if (type instanceof DecimalType decimalType && !decimalType.isShort()) {
                 type.writeObject(builder, Int128.ZERO);
             }
             else {

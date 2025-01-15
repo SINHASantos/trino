@@ -15,12 +15,15 @@ package io.trino.tests.product.launcher.suite.suites;
 
 import com.google.common.collect.ImmutableList;
 import io.trino.tests.product.launcher.env.EnvironmentConfig;
-import io.trino.tests.product.launcher.env.environment.EnvSinglenode;
+import io.trino.tests.product.launcher.env.environment.EnvMultinode;
 import io.trino.tests.product.launcher.suite.Suite;
 import io.trino.tests.product.launcher.suite.SuiteTestRun;
 
 import java.util.List;
 
+import static io.trino.tests.product.TestGroups.CONFIGURED_FEATURES;
+import static io.trino.tests.product.TestGroups.HIVE_COMPRESSION;
+import static io.trino.tests.product.TestGroups.STORAGE_FORMATS_DETAILED;
 import static io.trino.tests.product.launcher.suite.SuiteTestRun.testOnEnvironment;
 
 public class SuiteStorageFormatsDetailed
@@ -30,8 +33,8 @@ public class SuiteStorageFormatsDetailed
     public List<SuiteTestRun> getTestRuns(EnvironmentConfig config)
     {
         return ImmutableList.of(
-                testOnEnvironment(EnvSinglenode.class)
-                        .withGroups("configured_features", "storage_formats_detailed", "hive_compression")
+                testOnEnvironment(EnvMultinode.class)
+                        .withGroups(CONFIGURED_FEATURES, STORAGE_FORMATS_DETAILED, HIVE_COMPRESSION)
                         .build());
     }
 }

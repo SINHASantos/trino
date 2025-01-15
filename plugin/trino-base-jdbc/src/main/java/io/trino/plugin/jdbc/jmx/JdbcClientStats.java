@@ -25,6 +25,7 @@ public final class JdbcClientStats
     private final JdbcApiStats buildInsertSql = new JdbcApiStats();
     private final JdbcApiStats prepareQuery = new JdbcApiStats();
     private final JdbcApiStats buildSql = new JdbcApiStats();
+    private final JdbcApiStats buildProcedure = new JdbcApiStats();
     private final JdbcApiStats implementJoin = new JdbcApiStats();
     private final JdbcApiStats commitCreateTable = new JdbcApiStats();
     private final JdbcApiStats createSchema = new JdbcApiStats();
@@ -38,16 +39,22 @@ public final class JdbcClientStats
     private final JdbcApiStats dropTable = new JdbcApiStats();
     private final JdbcApiStats finishInsertTable = new JdbcApiStats();
     private final JdbcApiStats getColumns = new JdbcApiStats();
+    private final JdbcApiStats getAllTableComments = new JdbcApiStats();
     private final JdbcApiStats getConnectionWithHandle = new JdbcApiStats();
     private final JdbcApiStats getConnectionWithSplit = new JdbcApiStats();
+    private final JdbcApiStats getConnectionWithProcedure = new JdbcApiStats();
     private final JdbcApiStats getPreparedStatement = new JdbcApiStats();
     private final JdbcApiStats getSchemaNames = new JdbcApiStats();
     private final JdbcApiStats getSplits = new JdbcApiStats();
+    private final JdbcApiStats getSplitsForProcedure = new JdbcApiStats();
     private final JdbcApiStats getTableHandle = new JdbcApiStats();
     private final JdbcApiStats getTableHandleForQuery = new JdbcApiStats();
+    private final JdbcApiStats getProcedureHandle = new JdbcApiStats();
     private final JdbcApiStats getTableNames = new JdbcApiStats();
     private final JdbcApiStats getTableStatistics = new JdbcApiStats();
     private final JdbcApiStats renameColumn = new JdbcApiStats();
+    private final JdbcApiStats setColumnType = new JdbcApiStats();
+    private final JdbcApiStats dropNotNullConstraint = new JdbcApiStats();
     private final JdbcApiStats renameTable = new JdbcApiStats();
     private final JdbcApiStats setTableProperties = new JdbcApiStats();
     private final JdbcApiStats rollbackCreateTable = new JdbcApiStats();
@@ -57,9 +64,12 @@ public final class JdbcClientStats
     private final JdbcApiStats toWriteMapping = new JdbcApiStats();
     private final JdbcApiStats implementAggregation = new JdbcApiStats();
     private final JdbcApiStats convertPredicate = new JdbcApiStats();
+    private final JdbcApiStats convertProjection = new JdbcApiStats();
     private final JdbcApiStats getTableScanRedirection = new JdbcApiStats();
     private final JdbcApiStats delete = new JdbcApiStats();
+    private final JdbcApiStats update = new JdbcApiStats();
     private final JdbcApiStats truncateTable = new JdbcApiStats();
+    private final JdbcApiStats getPrimaryKeys = new JdbcApiStats();
 
     @Managed
     @Nested
@@ -108,6 +118,13 @@ public final class JdbcClientStats
     public JdbcApiStats getBuildSql()
     {
         return buildSql;
+    }
+
+    @Managed
+    @Nested
+    public JdbcApiStats getBuildProcedure()
+    {
+        return buildProcedure;
     }
 
     @Managed
@@ -203,6 +220,13 @@ public final class JdbcClientStats
 
     @Managed
     @Nested
+    public JdbcApiStats getGetAllTableComments()
+    {
+        return getAllTableComments;
+    }
+
+    @Managed
+    @Nested
     public JdbcApiStats getGetConnectionWithHandle()
     {
         return getConnectionWithHandle;
@@ -213,6 +237,13 @@ public final class JdbcClientStats
     public JdbcApiStats getGetConnectionWithSplit()
     {
         return getConnectionWithSplit;
+    }
+
+    @Managed
+    @Nested
+    public JdbcApiStats getGetConnectionWithProcedure()
+    {
+        return getConnectionWithProcedure;
     }
 
     @Managed
@@ -238,6 +269,13 @@ public final class JdbcClientStats
 
     @Managed
     @Nested
+    public JdbcApiStats getGetSplitsForProcedure()
+    {
+        return getSplitsForProcedure;
+    }
+
+    @Managed
+    @Nested
     public JdbcApiStats getGetTableHandle()
     {
         return getTableHandle;
@@ -248,6 +286,13 @@ public final class JdbcClientStats
     public JdbcApiStats getGetTableHandleForQuery()
     {
         return getTableHandleForQuery;
+    }
+
+    @Managed
+    @Nested
+    public JdbcApiStats getGetProcedureHandle()
+    {
+        return getProcedureHandle;
     }
 
     @Managed
@@ -269,6 +314,20 @@ public final class JdbcClientStats
     public JdbcApiStats getRenameColumn()
     {
         return renameColumn;
+    }
+
+    @Managed
+    @Nested
+    public JdbcApiStats getSetColumnType()
+    {
+        return setColumnType;
+    }
+
+    @Managed
+    @Nested
+    public JdbcApiStats getDropNotNullConstraint()
+    {
+        return dropNotNullConstraint;
     }
 
     @Managed
@@ -336,6 +395,13 @@ public final class JdbcClientStats
 
     @Managed
     @Nested
+    public JdbcApiStats getConvertProjection()
+    {
+        return convertProjection;
+    }
+
+    @Managed
+    @Nested
     public JdbcApiStats getGetTableScanRedirection()
     {
         return getTableScanRedirection;
@@ -350,8 +416,22 @@ public final class JdbcClientStats
 
     @Managed
     @Nested
+    public JdbcApiStats getUpdate()
+    {
+        return update;
+    }
+
+    @Managed
+    @Nested
     public JdbcApiStats getTruncateTable()
     {
         return truncateTable;
+    }
+
+    @Managed
+    @Nested
+    public JdbcApiStats getGetPrimaryKeys()
+    {
+        return getPrimaryKeys;
     }
 }

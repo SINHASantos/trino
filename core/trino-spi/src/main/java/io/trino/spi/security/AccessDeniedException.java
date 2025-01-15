@@ -14,9 +14,12 @@
 package io.trino.spi.security;
 
 import io.trino.spi.TrinoException;
+import io.trino.spi.connector.EntityKindAndName;
+import io.trino.spi.function.FunctionKind;
 
 import java.security.Principal;
 import java.util.Collection;
+import java.util.Locale;
 import java.util.Optional;
 import java.util.Set;
 
@@ -116,6 +119,26 @@ public class AccessDeniedException
     public static void denyCatalogAccess(String catalogName, String extraInfo)
     {
         throw new AccessDeniedException(format("Cannot access catalog %s%s", catalogName, formatExtraInfo(extraInfo)));
+    }
+
+    public static void denyCreateCatalog(String catalogName)
+    {
+        denyCreateCatalog(catalogName, null);
+    }
+
+    public static void denyCreateCatalog(String catalogName, String extraInfo)
+    {
+        throw new AccessDeniedException(format("Cannot create catalog %s%s", catalogName, formatExtraInfo(extraInfo)));
+    }
+
+    public static void denyDropCatalog(String catalogName)
+    {
+        denyDropCatalog(catalogName, null);
+    }
+
+    public static void denyDropCatalog(String catalogName, String extraInfo)
+    {
+        throw new AccessDeniedException(format("Cannot drop catalog %s%s", catalogName, formatExtraInfo(extraInfo)));
     }
 
     public static void denyCreateSchema(String schemaName)
@@ -273,6 +296,11 @@ public class AccessDeniedException
         throw new AccessDeniedException(format("Cannot show columns of table %s", tableName));
     }
 
+    public static void denyShowColumns(String tableName, String extraInfo)
+    {
+        throw new AccessDeniedException(format("Cannot show columns of table %s%s", tableName, formatExtraInfo(extraInfo)));
+    }
+
     public static void denyAddColumn(String tableName)
     {
         denyAddColumn(tableName, null);
@@ -291,6 +319,16 @@ public class AccessDeniedException
     public static void denyDropColumn(String tableName, String extraInfo)
     {
         throw new AccessDeniedException(format("Cannot drop a column from table %s%s", tableName, formatExtraInfo(extraInfo)));
+    }
+
+    public static void denyAlterColumn(String tableName)
+    {
+        denyAlterColumn(tableName, null);
+    }
+
+    public static void denyAlterColumn(String tableName, String extraInfo)
+    {
+        throw new AccessDeniedException(format("Cannot alter a column for table %s%s", tableName, formatExtraInfo(extraInfo)));
     }
 
     public static void denySetTableAuthorization(String tableName, TrinoPrincipal principal)
@@ -388,16 +426,6 @@ public class AccessDeniedException
         throw new AccessDeniedException(format("View owner '%s' cannot create view that selects from %s%s", identity.getUser(), sourceName, formatExtraInfo(extraInfo)));
     }
 
-    public static void denyGrantExecuteFunctionPrivilege(String functionName, Identity identity, Identity grantee)
-    {
-        denyGrantExecuteFunctionPrivilege(functionName, identity, format("user '%s'", grantee.getUser()));
-    }
-
-    public static void denyGrantExecuteFunctionPrivilege(String functionName, Identity identity, String grantee)
-    {
-        throw new AccessDeniedException(format("'%s' cannot grant '%s' execution to %s", identity.getUser(), functionName, grantee));
-    }
-
     public static void denyRenameView(String viewName, String newViewName)
     {
         denyRenameView(viewName, newViewName, null);
@@ -426,16 +454,6 @@ public class AccessDeniedException
     public static void denyDropView(String viewName, String extraInfo)
     {
         throw new AccessDeniedException(format("Cannot drop view %s%s", viewName, formatExtraInfo(extraInfo)));
-    }
-
-    public static void denySelectView(String viewName)
-    {
-        denySelectView(viewName, null);
-    }
-
-    public static void denySelectView(String viewName, String extraInfo)
-    {
-        throw new AccessDeniedException(format("Cannot select from view %s%s", viewName, formatExtraInfo(extraInfo)));
     }
 
     public static void denyCreateMaterializedView(String materializedViewName)
@@ -548,14 +566,49 @@ public class AccessDeniedException
         throw new AccessDeniedException(format("Cannot revoke privilege %s on table %s%s", privilege, tableName, formatExtraInfo(extraInfo)));
     }
 
+    public static void denyGrantEntityPrivilege(String privilege, EntityKindAndName entity)
+    {
+        denyGrantEntityPrivilege(privilege, entity, null);
+    }
+
+    public static void denyGrantEntityPrivilege(String privilege, EntityKindAndName entity, String extraInfo)
+    {
+        entityPrivilegeException("grant", privilege, entity, extraInfo);
+    }
+
+    public static void denyDenyEntityPrivilege(String privilege, EntityKindAndName entity)
+    {
+        denyDenyEntityPrivilege(privilege, entity, null);
+    }
+
+    public static void denyDenyEntityPrivilege(String privilege, EntityKindAndName entity, String extraInfo)
+    {
+        entityPrivilegeException("deny", privilege, entity, extraInfo);
+    }
+
+    public static void denyRevokeEntityPrivilege(String privilege, EntityKindAndName entity)
+    {
+        denyRevokeEntityPrivilege(privilege, entity, null);
+    }
+
+    public static void denyRevokeEntityPrivilege(String privilege, EntityKindAndName entity, String extraInfo)
+    {
+        entityPrivilegeException("revoke", privilege, entity, extraInfo);
+    }
+
+    private static void entityPrivilegeException(String operation, String privilege, EntityKindAndName entity, String extraInfo)
+    {
+        throw new AccessDeniedException(format("Cannot %s privilege %s on %s %s%s",
+                operation,
+                privilege,
+                entity.entityKind().toLowerCase(Locale.ROOT),
+                entity.name(),
+                formatExtraInfo(extraInfo)));
+    }
+
     public static void denyShowRoles()
     {
         throw new AccessDeniedException("Cannot show roles");
-    }
-
-    public static void denyShowRoleAuthorizationDescriptors()
-    {
-        throw new AccessDeniedException("Cannot show role authorization descriptors");
     }
 
     public static void denyShowCurrentRoles()
@@ -643,9 +696,54 @@ public class AccessDeniedException
         throw new AccessDeniedException(format("Cannot execute function %s", functionName));
     }
 
+    public static void denyExecuteFunction(String functionName, FunctionKind functionKind, String extraInfo)
+    {
+        throw new AccessDeniedException(format("Cannot execute %s function %s%s", functionKind.name().toLowerCase(Locale.ROOT), functionName, formatExtraInfo(extraInfo)));
+    }
+
     public static void denyExecuteTableProcedure(String tableName, String procedureName)
     {
         throw new AccessDeniedException(format("Cannot execute table procedure %s on %s", procedureName, tableName));
+    }
+
+    public static void denyShowFunctions(String schemaName)
+    {
+        denyShowFunctions(schemaName, null);
+    }
+
+    public static void denyShowFunctions(String schemaName, String extraInfo)
+    {
+        throw new AccessDeniedException(format("Cannot show functions of schema %s%s", schemaName, formatExtraInfo(extraInfo)));
+    }
+
+    public static void denyCreateFunction(String functionName)
+    {
+        denyCreateFunction(functionName, null);
+    }
+
+    public static void denyCreateFunction(String functionName, String extraInfo)
+    {
+        throw new AccessDeniedException(format("Cannot create function %s%s", functionName, formatExtraInfo(extraInfo)));
+    }
+
+    public static void denyDropFunction(String functionName)
+    {
+        denyDropFunction(functionName, null);
+    }
+
+    public static void denyDropFunction(String functionName, String extraInfo)
+    {
+        throw new AccessDeniedException(format("Cannot drop function %s%s", functionName, formatExtraInfo(extraInfo)));
+    }
+
+    public static void denyShowCreateFunction(String functionName)
+    {
+        denyShowCreateFunction(functionName, null);
+    }
+
+    public static void denyShowCreateFunction(String functionName, String extraInfo)
+    {
+        throw new AccessDeniedException(format("Cannot show create function for %s%s", functionName, formatExtraInfo(extraInfo)));
     }
 
     private static Object formatExtraInfo(String extraInfo)

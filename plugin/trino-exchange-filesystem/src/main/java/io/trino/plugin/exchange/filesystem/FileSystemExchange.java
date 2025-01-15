@@ -20,6 +20,10 @@ import com.google.common.collect.Multimap;
 import com.google.common.util.concurrent.FutureCallback;
 import com.google.common.util.concurrent.Futures;
 import com.google.common.util.concurrent.ListenableFuture;
+import com.google.errorprone.annotations.concurrent.GuardedBy;
+import io.opentelemetry.api.trace.Span;
+import io.opentelemetry.api.trace.Tracer;
+import io.opentelemetry.context.Context;
 import io.trino.plugin.exchange.filesystem.FileSystemExchangeSourceHandle.SourceFile;
 import io.trino.spi.exchange.Exchange;
 import io.trino.spi.exchange.ExchangeContext;
@@ -28,8 +32,6 @@ import io.trino.spi.exchange.ExchangeSinkHandle;
 import io.trino.spi.exchange.ExchangeSinkInstanceHandle;
 import io.trino.spi.exchange.ExchangeSourceHandle;
 import io.trino.spi.exchange.ExchangeSourceHandleSource;
-
-import javax.annotation.concurrent.GuardedBy;
 
 import java.io.File;
 import java.io.IOException;
@@ -50,6 +52,7 @@ import java.util.concurrent.ThreadLocalRandom;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
+import static com.google.common.base.MoreObjects.toStringHelper;
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Preconditions.checkState;
 import static com.google.common.base.Verify.verify;
@@ -62,6 +65,7 @@ import static io.trino.plugin.exchange.filesystem.FileSystemExchangeSink.DATA_FI
 import static java.lang.Integer.parseInt;
 import static java.lang.String.format;
 import static java.util.Objects.requireNonNull;
+import static java.util.concurrent.CompletableFuture.completedFuture;
 
 public class FileSystemExchange
         implements Exchange
@@ -73,6 +77,7 @@ public class FileSystemExchange
     private final List<URI> baseDirectories;
     private final FileSystemExchangeStorage exchangeStorage;
     private final FileSystemExchangeStats stats;
+    private final Span exchangeSpan;
     private final ExchangeContext exchangeContext;
     private final int outputPartitionCount;
     private final boolean preserveOrderWithinPartition;
@@ -97,6 +102,7 @@ public class FileSystemExchange
             List<URI> baseDirectories,
             FileSystemExchangeStorage exchangeStorage,
             FileSystemExchangeStats stats,
+            Tracer tracer,
             ExchangeContext exchangeContext,
             int outputPartitionCount,
             boolean preserveOrderWithinPartition,
@@ -111,6 +117,12 @@ public class FileSystemExchange
         this.exchangeStorage = requireNonNull(exchangeStorage, "exchangeStorage is null");
         this.stats = requireNonNull(stats, "stats is null");
         this.exchangeContext = requireNonNull(exchangeContext, "exchangeContext is null");
+        this.exchangeSpan = tracer.spanBuilder("exchange")
+                .setParent(Context.current().with(exchangeContext.getParentSpan()))
+                .setAttribute("ExchangeId", exchangeContext.getExchangeId().getId())
+                .setAttribute("PartitionCount", outputPartitionCount)
+                .setAttribute("PreserveOrderWithinPartition", Boolean.toString(preserveOrderWithinPartition))
+                .startSpan();
         this.outputPartitionCount = outputPartitionCount;
         this.preserveOrderWithinPartition = preserveOrderWithinPartition;
 
@@ -142,7 +154,7 @@ public class FileSystemExchange
     }
 
     @Override
-    public ExchangeSinkInstanceHandle instantiateSink(ExchangeSinkHandle sinkHandle, int taskAttemptId)
+    public CompletableFuture<ExchangeSinkInstanceHandle> instantiateSink(ExchangeSinkHandle sinkHandle, int taskAttemptId)
     {
         FileSystemExchangeSinkHandle fileSystemExchangeSinkHandle = (FileSystemExchangeSinkHandle) sinkHandle;
         int taskPartitionId = fileSystemExchangeSinkHandle.getPartitionId();
@@ -154,11 +166,11 @@ public class FileSystemExchange
             throw new UncheckedIOException(e);
         }
 
-        return new FileSystemExchangeSinkInstanceHandle(fileSystemExchangeSinkHandle, outputDirectory, outputPartitionCount, preserveOrderWithinPartition);
+        return completedFuture(new FileSystemExchangeSinkInstanceHandle(fileSystemExchangeSinkHandle, outputDirectory, outputPartitionCount, preserveOrderWithinPartition));
     }
 
     @Override
-    public ExchangeSinkInstanceHandle updateSinkInstanceHandle(ExchangeSinkHandle sinkHandle, int taskAttemptId)
+    public CompletableFuture<ExchangeSinkInstanceHandle> updateSinkInstanceHandle(ExchangeSinkHandle sinkHandle, int taskAttemptId)
     {
         // this implementation never requests an update
         throw new UnsupportedOperationException();
@@ -183,7 +195,6 @@ public class FileSystemExchange
                 return;
             }
             verify(noMoreSinks, "noMoreSinks is expected to be set");
-            verify(finishedSinks.keySet().containsAll(allSinks), "all sinks are expected to be finished");
             // input is ready, create exchange source handles
             exchangeSourceHandlesCreationStarted = true;
             exchangeSourceHandlesCreationFuture = stats.getCreateExchangeSourceHandles().record(this::createExchangeSourceHandles);
@@ -292,7 +303,7 @@ public class FileSystemExchange
     {
         // Add a randomized prefix to evenly distribute data into different S3 shards
         // Data output file path format: {randomizedHexPrefix}.{queryId}.{stageId}.{sinkPartitionId}/{attemptId}/{sourcePartitionId}_{splitId}.data
-        return outputDirectories.computeIfAbsent(taskPartitionId, ignored -> baseDirectories.get(ThreadLocalRandom.current().nextInt(baseDirectories.size()))
+        return outputDirectories.computeIfAbsent(taskPartitionId, _ -> baseDirectories.get(ThreadLocalRandom.current().nextInt(baseDirectories.size()))
                 .resolve(generateRandomizedHexPrefix() + "." + exchangeContext.getQueryId() + "." + exchangeContext.getExchangeId() + "." + taskPartitionId + PATH_SEPARATOR));
     }
 
@@ -315,7 +326,14 @@ public class FileSystemExchange
     @Override
     public void close()
     {
-        stats.getCloseExchange().record(exchangeStorage.deleteRecursively(allSinks.stream().map(this::getTaskOutputDirectory).collect(toImmutableList())));
+        ImmutableList<URI> toDelete;
+        synchronized (this) {
+            toDelete = allSinks.stream()
+                    .map(this::getTaskOutputDirectory)
+                    .collect(toImmutableList());
+        }
+        stats.getCloseExchange().record(exchangeStorage.deleteRecursively(toDelete));
+        exchangeSpan.end();
     }
 
     /**
@@ -337,5 +355,25 @@ public class FileSystemExchange
             checkArgument(partitionId >= 0, "partitionId is expected to be greater than or equal to zero: %s", partitionId);
             checkArgument(attemptId >= 0, "attemptId is expected to be greater than or equal to zero: %s", attemptId);
         }
+    }
+
+    @Override
+    public synchronized String toString()
+    {
+        return toStringHelper(this)
+                .add("baseDirectories", baseDirectories)
+                .add("exchangeStorage", exchangeStorage.getClass().getName())
+                .add("exchangeContext", exchangeContext)
+                .add("outputPartitionCount", outputPartitionCount)
+                .add("preserveOrderWithinPartition", preserveOrderWithinPartition)
+                .add("fileListingParallelism", fileListingParallelism)
+                .add("exchangeSourceHandleTargetDataSizeInBytes", exchangeSourceHandleTargetDataSizeInBytes)
+                .add("outputDirectories", outputDirectories)
+                .add("allSinks", allSinks)
+                .add("finishedSinks", finishedSinks)
+                .add("noMoreSinks", noMoreSinks)
+                .add("exchangeSourceHandlesCreationStarted", exchangeSourceHandlesCreationStarted)
+                .add("exchangeSourceHandlesFuture", exchangeSourceHandlesFuture)
+                .toString();
     }
 }

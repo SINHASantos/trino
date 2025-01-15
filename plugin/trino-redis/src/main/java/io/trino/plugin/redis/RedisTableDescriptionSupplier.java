@@ -17,12 +17,11 @@ import com.google.common.base.Splitter;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
+import com.google.inject.Inject;
 import io.airlift.json.JsonCodec;
 import io.airlift.log.Logger;
 import io.trino.decoder.dummy.DummyRowDecoder;
 import io.trino.spi.connector.SchemaTableName;
-
-import javax.inject.Inject;
 
 import java.io.File;
 import java.io.IOException;
@@ -68,9 +67,9 @@ public class RedisTableDescriptionSupplier
             for (File file : listFiles(tableDescriptionDir)) {
                 if (file.isFile() && file.getName().endsWith(".json")) {
                     RedisTableDescription table = tableDescriptionCodec.fromJson(readAllBytes(file.toPath()));
-                    String schemaName = firstNonNull(table.getSchemaName(), defaultSchema);
-                    log.debug("Redis table %s.%s: %s", schemaName, table.getTableName(), table);
-                    builder.put(new SchemaTableName(schemaName, table.getTableName()), table);
+                    String schemaName = firstNonNull(table.schemaName(), defaultSchema);
+                    log.debug("Redis table %s.%s: %s", schemaName, table.tableName(), table);
+                    builder.put(new SchemaTableName(schemaName, table.tableName()), table);
                 }
             }
 

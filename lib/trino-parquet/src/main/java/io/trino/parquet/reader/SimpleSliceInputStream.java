@@ -13,9 +13,9 @@
  */
 package io.trino.parquet.reader;
 
+import com.google.common.primitives.Shorts;
 import io.airlift.slice.Slice;
 
-import static com.google.common.base.Preconditions.checkArgument;
 import static java.util.Objects.requireNonNull;
 
 /**
@@ -38,13 +38,26 @@ public final class SimpleSliceInputStream
     public SimpleSliceInputStream(Slice slice, int offset)
     {
         this.slice = requireNonNull(slice, "slice is null");
-        checkArgument(slice.length() == 0 || slice.hasByteArray(), "SimpleSliceInputStream supports only slices backed by byte array");
         this.offset = offset;
     }
 
     public byte readByte()
     {
         return slice.getByte(offset++);
+    }
+
+    public short readShort()
+    {
+        short value = slice.getShort(offset);
+        offset += Short.BYTES;
+        return value;
+    }
+
+    public int readInt()
+    {
+        int value = slice.getInt(offset);
+        offset += Integer.BYTES;
+        return value;
     }
 
     public long readLong()
@@ -59,6 +72,43 @@ public final class SimpleSliceInputStream
         byte[] bytes = slice.getBytes();
         offset = slice.length();
         return bytes;
+    }
+
+    public void readBytes(byte[] output, int outputOffset, int length)
+    {
+        slice.getBytes(offset, output, outputOffset, length);
+        offset += length;
+    }
+
+    public void readShorts(short[] output, int outputOffset, int length)
+    {
+        slice.getShorts(offset, output, outputOffset, length);
+        offset += length * Shorts.BYTES;
+    }
+
+    public void readInts(int[] output, int outputOffset, int length)
+    {
+        slice.getInts(offset, output, outputOffset, length);
+        offset += length * Integer.BYTES;
+    }
+
+    public void readLongs(long[] output, int outputOffset, int length)
+    {
+        slice.getLongs(offset, output, outputOffset, length);
+        offset += length * Long.BYTES;
+    }
+
+    public void readBytes(Slice destination, int destinationIndex, int length)
+    {
+        slice.getBytes(offset, destination, destinationIndex, length);
+        offset += length;
+    }
+
+    public Slice readSlice(int length)
+    {
+        Slice result = slice.slice(offset, length);
+        offset += length;
+        return result;
     }
 
     public void skip(int n)
@@ -87,5 +137,29 @@ public final class SimpleSliceInputStream
     public int getByteArrayOffset()
     {
         return offset + slice.byteArrayOffset();
+    }
+
+    public int readIntUnchecked()
+    {
+        int value = slice.getIntUnchecked(offset);
+        offset += Integer.BYTES;
+        return value;
+    }
+
+    public long readLongUnchecked()
+    {
+        long value = slice.getLongUnchecked(offset);
+        offset += Long.BYTES;
+        return value;
+    }
+
+    public byte getByteUnchecked(int index)
+    {
+        return slice.getByteUnchecked(offset + index);
+    }
+
+    public int getIntUnchecked(int index)
+    {
+        return slice.getIntUnchecked(offset + index);
     }
 }

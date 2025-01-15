@@ -16,17 +16,16 @@ package io.trino.server.security.oauth2;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.google.inject.Inject;
 import com.nimbusds.oauth2.sdk.ParseException;
 import com.nimbusds.oauth2.sdk.http.HTTPResponse;
 import com.nimbusds.oauth2.sdk.id.Issuer;
 import com.nimbusds.openid.connect.sdk.op.OIDCProviderConfigurationRequest;
 import com.nimbusds.openid.connect.sdk.op.OIDCProviderMetadata;
+import dev.failsafe.Failsafe;
+import dev.failsafe.RetryPolicy;
 import io.airlift.json.ObjectMapperProvider;
 import io.airlift.log.Logger;
-import net.jodah.failsafe.Failsafe;
-import net.jodah.failsafe.RetryPolicy;
-
-import javax.inject.Inject;
 
 import java.net.URI;
 import java.time.Duration;
@@ -36,11 +35,11 @@ import static com.google.common.base.Preconditions.checkState;
 import static io.airlift.http.client.HttpStatus.OK;
 import static io.airlift.http.client.HttpStatus.REQUEST_TIMEOUT;
 import static io.airlift.http.client.HttpStatus.TOO_MANY_REQUESTS;
-import static io.trino.server.security.oauth2.StaticOAuth2ServerConfiguration.ACCESS_TOKEN_ISSUER;
-import static io.trino.server.security.oauth2.StaticOAuth2ServerConfiguration.AUTH_URL;
-import static io.trino.server.security.oauth2.StaticOAuth2ServerConfiguration.JWKS_URL;
-import static io.trino.server.security.oauth2.StaticOAuth2ServerConfiguration.TOKEN_URL;
-import static io.trino.server.security.oauth2.StaticOAuth2ServerConfiguration.USERINFO_URL;
+import static io.trino.server.security.oauth2.StaticOAuth2ServerConfig.ACCESS_TOKEN_ISSUER;
+import static io.trino.server.security.oauth2.StaticOAuth2ServerConfig.AUTH_URL;
+import static io.trino.server.security.oauth2.StaticOAuth2ServerConfig.JWKS_URL;
+import static io.trino.server.security.oauth2.StaticOAuth2ServerConfig.TOKEN_URL;
+import static io.trino.server.security.oauth2.StaticOAuth2ServerConfig.USERINFO_URL;
 import static java.lang.String.format;
 import static java.util.Objects.requireNonNull;
 
@@ -77,12 +76,13 @@ public class OidcDiscovery
     @Override
     public OAuth2ServerConfig get()
     {
-        return Failsafe.with(new RetryPolicy<>()
+        return Failsafe.with(RetryPolicy.builder()
                         .withMaxAttempts(-1)
                         .withMaxDuration(discoveryTimeout)
                         .withDelay(Duration.ofSeconds(1))
                         .abortOn(IllegalStateException.class)
-                        .onFailedAttempt(attempt -> LOG.debug("OpenID Connect Metadata read failed: %s", attempt.getLastFailure())))
+                        .onFailedAttempt(attempt -> LOG.debug("OpenID Connect Metadata read failed: %s", attempt.getLastException()))
+                        .build())
                 .get(() -> httpClient.execute(new OIDCProviderConfigurationRequest(issuer), this::parseConfigurationResponse));
     }
 
@@ -97,7 +97,7 @@ public class OidcDiscovery
             }
             throw new IllegalStateException(format("Invalid response from OpenID Metadata endpoint. Expected response code to be %s, but was %s", OK.code(), statusCode));
         }
-        return readConfiguration(response.getContent());
+        return readConfiguration(response.getBody());
     }
 
     private OAuth2ServerConfig readConfiguration(String body)
@@ -114,6 +114,7 @@ public class OidcDiscovery
             else {
                 userinfoEndpoint = Optional.empty();
             }
+            Optional<URI> endSessionEndpoint = Optional.ofNullable(metadata.getEndSessionEndpointURI());
             return new OAuth2ServerConfig(
                     // AD FS server can include "access_token_issuer" field in OpenID Provider Metadata.
                     // It's not a part of the OIDC standard thus have to be handled separately.
@@ -122,7 +123,8 @@ public class OidcDiscovery
                     getRequiredField("authorization_endpoint", metadata.getAuthorizationEndpointURI(), AUTH_URL, authUrl),
                     getRequiredField("token_endpoint", metadata.getTokenEndpointURI(), TOKEN_URL, tokenUrl),
                     getRequiredField("jwks_uri", metadata.getJWKSetURI(), JWKS_URL, jwksUrl),
-                    userinfoEndpoint.map(URI::create));
+                    userinfoEndpoint.map(URI::create),
+                    endSessionEndpoint);
         }
         catch (JsonProcessingException e) {
             throw new ParseException("Invalid JSON value", e);

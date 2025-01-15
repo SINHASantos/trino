@@ -14,19 +14,21 @@
 package io.trino.plugin.deltalake;
 
 import com.google.common.collect.ImmutableList;
+import com.google.inject.Inject;
+import io.trino.plugin.deltalake.transactionlog.DeltaLakeSchemaSupport.ColumnMappingMode;
 import io.trino.spi.TrinoException;
 import io.trino.spi.session.PropertyMetadata;
 import io.trino.spi.type.ArrayType;
 
-import javax.inject.Inject;
-
 import java.util.Collection;
+import java.util.EnumSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static io.trino.spi.StandardErrorCode.INVALID_TABLE_PROPERTY;
+import static io.trino.spi.session.PropertyMetadata.booleanProperty;
 import static io.trino.spi.session.PropertyMetadata.longProperty;
 import static io.trino.spi.session.PropertyMetadata.stringProperty;
 import static io.trino.spi.type.VarcharType.VARCHAR;
@@ -38,12 +40,15 @@ public class DeltaLakeTableProperties
     public static final String LOCATION_PROPERTY = "location";
     public static final String PARTITIONED_BY_PROPERTY = "partitioned_by";
     public static final String CHECKPOINT_INTERVAL_PROPERTY = "checkpoint_interval";
+    public static final String CHANGE_DATA_FEED_ENABLED_PROPERTY = "change_data_feed_enabled";
+    public static final String COLUMN_MAPPING_MODE_PROPERTY = "column_mapping_mode";
+    public static final String DELETION_VECTORS_ENABLED_PROPERTY = "deletion_vectors_enabled";
 
     private final List<PropertyMetadata<?>> tableProperties;
 
     @SuppressWarnings("unchecked")
     @Inject
-    public DeltaLakeTableProperties()
+    public DeltaLakeTableProperties(DeltaLakeConfig config)
     {
         tableProperties = ImmutableList.<PropertyMetadata<?>>builder()
                 .add(stringProperty(
@@ -66,6 +71,28 @@ public class DeltaLakeTableProperties
                         CHECKPOINT_INTERVAL_PROPERTY,
                         "Checkpoint interval",
                         null,
+                        false))
+                .add(booleanProperty(
+                        CHANGE_DATA_FEED_ENABLED_PROPERTY,
+                        "Enables storing change data feed entries",
+                        null,
+                        false))
+                .add(stringProperty(
+                        COLUMN_MAPPING_MODE_PROPERTY,
+                        "Column mapping mode. Possible values: [ID, NAME, NONE]",
+                        // TODO: Consider using 'name' by default. 'none' column mapping doesn't support some statements
+                        ColumnMappingMode.NONE.name(),
+                        value -> {
+                            EnumSet<ColumnMappingMode> allowed = EnumSet.of(ColumnMappingMode.ID, ColumnMappingMode.NAME, ColumnMappingMode.NONE);
+                            if (allowed.stream().map(Enum::name).noneMatch(mode -> mode.equalsIgnoreCase(value))) {
+                                throw new IllegalArgumentException(format("Invalid value [%s]. Valid values: [ID, NAME, NONE]", value));
+                            }
+                        },
+                        false))
+                .add(booleanProperty(
+                        DELETION_VECTORS_ENABLED_PROPERTY,
+                        "Enables deletion vectors",
+                        config.isDeletionVectorsEnabled(),
                         false))
                 .build();
     }
@@ -96,5 +123,20 @@ public class DeltaLakeTableProperties
         });
 
         return checkpointInterval;
+    }
+
+    public static Optional<Boolean> getChangeDataFeedEnabled(Map<String, Object> tableProperties)
+    {
+        return Optional.ofNullable((Boolean) tableProperties.get(CHANGE_DATA_FEED_ENABLED_PROPERTY));
+    }
+
+    public static ColumnMappingMode getColumnMappingMode(Map<String, Object> tableProperties)
+    {
+        return ColumnMappingMode.valueOf(tableProperties.get(COLUMN_MAPPING_MODE_PROPERTY).toString().toUpperCase(ENGLISH));
+    }
+
+    public static boolean getDeletionVectorsEnabled(Map<String, Object> tableProperties)
+    {
+        return (boolean) tableProperties.getOrDefault(DELETION_VECTORS_ENABLED_PROPERTY, false);
     }
 }
