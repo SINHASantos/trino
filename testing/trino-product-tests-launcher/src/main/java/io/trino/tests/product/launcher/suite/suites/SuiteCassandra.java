@@ -15,12 +15,14 @@ package io.trino.tests.product.launcher.suite.suites;
 
 import com.google.common.collect.ImmutableList;
 import io.trino.tests.product.launcher.env.EnvironmentConfig;
-import io.trino.tests.product.launcher.env.environment.EnvSinglenodeCassandra;
+import io.trino.tests.product.launcher.env.environment.EnvMultinodeCassandra;
 import io.trino.tests.product.launcher.suite.Suite;
 import io.trino.tests.product.launcher.suite.SuiteTestRun;
 
 import java.util.List;
 
+import static io.trino.tests.product.TestGroups.CASSANDRA;
+import static io.trino.tests.product.TestGroups.CONFIGURED_FEATURES;
 import static io.trino.tests.product.launcher.suite.SuiteTestRun.testOnEnvironment;
 
 public class SuiteCassandra
@@ -30,8 +32,8 @@ public class SuiteCassandra
     public List<SuiteTestRun> getTestRuns(EnvironmentConfig config)
     {
         return ImmutableList.of(
-                testOnEnvironment(EnvSinglenodeCassandra.class)
-                        .withGroups("configured_features", "cassandra")
+                testOnEnvironment(EnvMultinodeCassandra.class)
+                        .withGroups(CONFIGURED_FEATURES, CASSANDRA)
                         .build());
     }
 }

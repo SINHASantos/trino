@@ -14,17 +14,18 @@
 package io.trino.transaction;
 
 import com.google.common.util.concurrent.ListenableFuture;
-import io.trino.connector.CatalogHandle;
 import io.trino.metadata.CatalogInfo;
 import io.trino.metadata.CatalogMetadata;
 import io.trino.spi.TrinoException;
+import io.trino.spi.connector.CatalogHandle;
 import io.trino.spi.connector.ConnectorTransactionHandle;
 import io.trino.spi.transaction.IsolationLevel;
 
 import java.util.List;
 import java.util.Optional;
+import java.util.Set;
 
-import static io.trino.spi.StandardErrorCode.NOT_FOUND;
+import static io.trino.spi.StandardErrorCode.CATALOG_NOT_FOUND;
 
 public interface TransactionManager
 {
@@ -39,6 +40,8 @@ public interface TransactionManager
 
     List<TransactionInfo> getAllTransactionInfos();
 
+    Set<TransactionId> getTransactionsUsingCatalog(CatalogHandle catalogHandle);
+
     TransactionId beginTransaction(boolean autoCommitContext);
 
     TransactionId beginTransaction(IsolationLevel isolationLevel, boolean readOnly, boolean autoCommitContext);
@@ -52,7 +55,7 @@ public interface TransactionManager
     default CatalogMetadata getRequiredCatalogMetadata(TransactionId transactionId, String catalogName)
     {
         return getOptionalCatalogMetadata(transactionId, catalogName)
-                .orElseThrow(() -> new TrinoException(NOT_FOUND, "Catalog does not exist: " + catalogName));
+                .orElseThrow(() -> new TrinoException(CATALOG_NOT_FOUND, "Catalog '%s' not found".formatted(catalogName)));
     }
 
     Optional<CatalogMetadata> getOptionalCatalogMetadata(TransactionId transactionId, String catalogName);
@@ -76,6 +79,8 @@ public interface TransactionManager
     ListenableFuture<Void> asyncCommit(TransactionId transactionId);
 
     ListenableFuture<Void> asyncAbort(TransactionId transactionId);
+
+    void blockCommit(TransactionId transactionId, String reason);
 
     void fail(TransactionId transactionId);
 }

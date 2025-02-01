@@ -15,13 +15,12 @@ package io.trino.operator;
 
 import com.google.common.util.concurrent.ListenableFuture;
 import com.google.common.util.concurrent.SettableFuture;
+import com.google.errorprone.annotations.concurrent.GuardedBy;
 import io.airlift.log.Logger;
 import io.airlift.slice.Slice;
 import io.airlift.units.DataSize;
 import io.trino.execution.TaskId;
 import io.trino.spi.TrinoException;
-
-import javax.annotation.concurrent.GuardedBy;
 
 import java.util.ArrayDeque;
 import java.util.HashSet;
@@ -29,9 +28,11 @@ import java.util.List;
 import java.util.Queue;
 import java.util.Set;
 import java.util.concurrent.Executor;
+import java.util.concurrent.atomic.AtomicLong;
 
 import static com.google.common.base.Preconditions.checkState;
 import static com.google.common.base.Throwables.throwIfUnchecked;
+import static com.google.common.util.concurrent.Futures.immediateVoidFuture;
 import static com.google.common.util.concurrent.Futures.nonCancellationPropagating;
 import static io.trino.spi.StandardErrorCode.REMOTE_TASK_FAILED;
 import static java.lang.Math.max;
@@ -47,12 +48,11 @@ public class StreamingDirectExchangeBuffer
 
     @GuardedBy("this")
     private final Queue<Slice> bufferedPages = new ArrayDeque<>();
-    @GuardedBy("this")
-    private volatile long bufferRetainedSizeInBytes;
+    private final AtomicLong bufferRetainedSizeInBytes = new AtomicLong();
     @GuardedBy("this")
     private volatile long maxBufferRetainedSizeInBytes;
     @GuardedBy("this")
-    private volatile SettableFuture<Void> blocked = SettableFuture.create();
+    private final Queue<SettableFuture<Void>> blocked = new ArrayDeque<>();
     @GuardedBy("this")
     private final Set<TaskId> activeTasks = new HashSet<>();
     @GuardedBy("this")
@@ -69,9 +69,15 @@ public class StreamingDirectExchangeBuffer
     }
 
     @Override
-    public ListenableFuture<Void> isBlocked()
+    public synchronized ListenableFuture<Void> isBlocked()
     {
-        return nonCancellationPropagating(blocked);
+        if (!bufferedPages.isEmpty() || isFailed() || (noMoreTasks && activeTasks.isEmpty())) {
+            return immediateVoidFuture();
+        }
+        SettableFuture<Void> callback = SettableFuture.create();
+        blocked.add(callback);
+
+        return nonCancellationPropagating(callback);
     }
 
     @Override
@@ -84,12 +90,8 @@ public class StreamingDirectExchangeBuffer
         }
         Slice page = bufferedPages.poll();
         if (page != null) {
-            bufferRetainedSizeInBytes -= page.getRetainedSize();
-            checkState(bufferRetainedSizeInBytes >= 0, "unexpected bufferRetainedSizeInBytes: %s", bufferRetainedSizeInBytes);
-        }
-        // if buffer is empty block future calls
-        if (bufferedPages.isEmpty() && !isFinished() && blocked.isDone()) {
-            blocked = SettableFuture.create();
+            long retained = bufferRetainedSizeInBytes.addAndGet(-page.getRetainedSize());
+            checkState(retained >= 0, "unexpected bufferRetainedSizeInBytes: %s", retained);
         }
         return page;
     }
@@ -117,9 +119,10 @@ public class StreamingDirectExchangeBuffer
             }
             checkState(activeTasks.contains(taskId), "taskId is not active: %s", taskId);
             bufferedPages.addAll(pages);
-            bufferRetainedSizeInBytes += pagesRetainedSizeInBytes;
-            maxBufferRetainedSizeInBytes = max(maxBufferRetainedSizeInBytes, bufferRetainedSizeInBytes);
-            unblockIfNecessary(blocked);
+            long retained = bufferRetainedSizeInBytes.addAndGet(pagesRetainedSizeInBytes);
+            maxBufferRetainedSizeInBytes = max(maxBufferRetainedSizeInBytes, retained);
+            // Unblock the same number of consumers as pages to reduce the possibility of a thread waking up with an empty pull from the buffer.
+            unblock(pages.size());
         }
     }
 
@@ -131,8 +134,8 @@ public class StreamingDirectExchangeBuffer
         }
         checkState(activeTasks.contains(taskId), "taskId not registered: %s", taskId);
         activeTasks.remove(taskId);
-        if (noMoreTasks && activeTasks.isEmpty() && !blocked.isDone()) {
-            unblockIfNecessary(blocked);
+        if (noMoreTasks && activeTasks.isEmpty()) {
+            unblockAll();
         }
     }
 
@@ -153,15 +156,15 @@ public class StreamingDirectExchangeBuffer
 
         failure = t;
         activeTasks.remove(taskId);
-        unblockIfNecessary(blocked);
+        unblockAll();
     }
 
     @Override
     public synchronized void noMoreTasks()
     {
         noMoreTasks = true;
-        if (activeTasks.isEmpty() && !blocked.isDone()) {
-            unblockIfNecessary(blocked);
+        if (activeTasks.isEmpty()) {
+            unblockAll();
         }
     }
 
@@ -180,13 +183,13 @@ public class StreamingDirectExchangeBuffer
     @Override
     public long getRemainingCapacityInBytes()
     {
-        return max(bufferCapacityInBytes - bufferRetainedSizeInBytes, 0);
+        return max(bufferCapacityInBytes - bufferRetainedSizeInBytes.get(), 0);
     }
 
     @Override
     public long getRetainedSizeInBytes()
     {
-        return bufferRetainedSizeInBytes;
+        return bufferRetainedSizeInBytes.get();
     }
 
     @Override
@@ -220,18 +223,28 @@ public class StreamingDirectExchangeBuffer
             return;
         }
         bufferedPages.clear();
-        bufferRetainedSizeInBytes = 0;
+        bufferRetainedSizeInBytes.set(0);
         activeTasks.clear();
         noMoreTasks = true;
         closed = true;
-        unblockIfNecessary(blocked);
+        unblockAll();
     }
 
-    private void unblockIfNecessary(SettableFuture<Void> blocked)
+    private synchronized void unblock(int unblock)
     {
-        if (!blocked.isDone()) {
-            executor.execute(() -> blocked.set(null));
+        for (int i = 0; i < unblock; i++) {
+            SettableFuture<Void> callback = blocked.poll();
+            if (callback == null) {
+                break;
+            }
+            executor.execute(() -> callback.set(null));
         }
+    }
+
+    private synchronized void unblockAll()
+    {
+        unblock(blocked.size());
+        checkState(blocked.isEmpty(), "blocked callbacks is not empty");
     }
 
     private synchronized void throwIfFailed()

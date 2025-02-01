@@ -15,10 +15,10 @@ package io.trino.connector.system;
 
 import io.trino.FullConnectorSession;
 import io.trino.Session;
-import io.trino.connector.CatalogHandle;
 import io.trino.metadata.CatalogInfo;
 import io.trino.metadata.Metadata;
 import io.trino.security.AccessControl;
+import io.trino.spi.connector.CatalogHandle;
 import io.trino.spi.connector.ConnectorSession;
 import io.trino.spi.connector.ConnectorTableMetadata;
 import io.trino.spi.connector.ConnectorTransactionHandle;
@@ -83,15 +83,15 @@ abstract class AbstractPropertiesSystemTable
         InMemoryRecordSet.Builder table = InMemoryRecordSet.builder(tableMetadata);
 
         List<CatalogInfo> catalogInfos = listCatalogs(session, metadata, accessControl).stream()
-                .sorted(Comparator.comparing(CatalogInfo::getCatalogName))
+                .sorted(Comparator.comparing(CatalogInfo::catalogName))
                 .collect(toImmutableList());
 
         for (CatalogInfo catalogInfo : catalogInfos) {
-            catalogProperties.apply(catalogInfo.getCatalogHandle()).stream()
+            catalogProperties.apply(catalogInfo.catalogHandle()).stream()
                     .sorted(Comparator.comparing(PropertyMetadata::getName))
                     .forEach(propertyMetadata ->
                             table.addRow(
-                                    catalogInfo.getCatalogName(),
+                                    catalogInfo.catalogName(),
                                     propertyMetadata.getName(),
                                     firstNonNull(propertyMetadata.getDefaultValue(), "").toString(),
                                     propertyMetadata.getSqlType().toString(),

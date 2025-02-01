@@ -75,7 +75,7 @@ public class RemoveEmptyUnionBranches
         }
 
         if (emptyBranches == node.getSources().size()) {
-            return Result.ofPlanNode(new ValuesNode(node.getId(), node.getOutputSymbols(), ImmutableList.of()));
+            return Result.ofPlanNode(new ValuesNode(node.getId(), node.getOutputSymbols()));
         }
 
         List<PlanNode> newSources = newSourcesBuilder.build();
@@ -84,7 +84,7 @@ public class RemoveEmptyUnionBranches
         if (newSources.size() == 1) {
             Assignments.Builder assignments = Assignments.builder();
 
-            outputsToInputs.entries().stream()
+            outputsToInputs.entries()
                     .forEach(entry -> assignments.put(entry.getKey(), entry.getValue().toSymbolReference()));
 
             return Result.ofPlanNode(

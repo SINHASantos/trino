@@ -13,22 +13,13 @@
  */
 package io.trino.plugin.deltalake;
 
-import io.trino.Session;
-import io.trino.hdfs.HdfsContext;
-import io.trino.plugin.hive.NodeVersion;
-import io.trino.plugin.hive.metastore.file.FileHiveMetastore;
-import io.trino.plugin.hive.metastore.file.FileHiveMetastoreConfig;
-import io.trino.spi.security.ConnectorIdentity;
-import io.trino.testing.DistributedQueryRunner;
 import io.trino.testing.QueryRunner;
 
 import java.nio.file.Files;
-import java.util.HashMap;
-import java.util.Map;
+import java.nio.file.Path;
 
-import static io.trino.plugin.deltalake.DeltaLakeConnectorFactory.CONNECTOR_NAME;
-import static io.trino.plugin.hive.HiveTestUtils.HDFS_ENVIRONMENT;
-import static io.trino.testing.TestingSession.testSessionBuilder;
+import static com.google.common.io.MoreFiles.deleteRecursively;
+import static com.google.common.io.RecursiveDeleteOption.ALLOW_INSECURE;
 
 public class TestDeltaLakeTableWithCustomLocationUsingHiveMetastore
         extends BaseDeltaLakeTableWithCustomLocation
@@ -37,34 +28,12 @@ public class TestDeltaLakeTableWithCustomLocationUsingHiveMetastore
     protected QueryRunner createQueryRunner()
             throws Exception
     {
-        Session session = testSessionBuilder()
-                .setCatalog(CATALOG_NAME)
-                .setSchema(SCHEMA)
+        Path catalogDir = Files.createTempDirectory("catalog-dir");
+        closeAfterClass(() -> deleteRecursively(catalogDir, ALLOW_INSECURE));
+
+        return DeltaLakeQueryRunner.builder()
+                .addDeltaProperty("hive.metastore.catalog.dir", catalogDir.toUri().toString())
+                .addDeltaProperty("delta.unique-table-location", "true")
                 .build();
-
-        DistributedQueryRunner.Builder<?> builder = DistributedQueryRunner.builder(session);
-        DistributedQueryRunner queryRunner = builder.build();
-
-        Map<String, String> connectorProperties = new HashMap<>();
-        metastoreDir = Files.createTempDirectory("test_delta_lake").toFile();
-        FileHiveMetastoreConfig config = new FileHiveMetastoreConfig()
-                .setCatalogDirectory(metastoreDir.toURI().toString())
-                .setMetastoreUser("test");
-        hdfsContext = new HdfsContext(ConnectorIdentity.ofUser(config.getMetastoreUser()));
-        metastore = new FileHiveMetastore(
-                new NodeVersion("testversion"),
-                HDFS_ENVIRONMENT,
-                false,
-                config);
-        connectorProperties.putIfAbsent("delta.unique-table-location", "true");
-        connectorProperties.putIfAbsent("hive.metastore", "file");
-        connectorProperties.putIfAbsent("hive.metastore.catalog.dir", metastoreDir.getPath());
-
-        queryRunner.installPlugin(new TestingDeltaLakePlugin());
-        queryRunner.createCatalog(CATALOG_NAME, CONNECTOR_NAME, connectorProperties);
-
-        queryRunner.execute("CREATE SCHEMA " + SCHEMA);
-
-        return queryRunner;
     }
 }

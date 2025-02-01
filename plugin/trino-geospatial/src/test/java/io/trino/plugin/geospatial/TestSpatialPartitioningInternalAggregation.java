@@ -19,21 +19,23 @@ import com.esri.core.geometry.ogc.OGCGeometry;
 import com.esri.core.geometry.ogc.OGCPoint;
 import com.google.common.collect.ImmutableList;
 import com.google.common.primitives.Ints;
+import io.airlift.slice.Slice;
 import io.trino.block.BlockAssertions;
 import io.trino.geospatial.KdbTreeUtils;
 import io.trino.geospatial.Rectangle;
+import io.trino.metadata.TestingFunctionResolution;
+import io.trino.operator.AggregationMetrics;
 import io.trino.operator.aggregation.Aggregator;
 import io.trino.operator.aggregation.AggregatorFactory;
 import io.trino.operator.aggregation.GroupedAggregator;
 import io.trino.operator.aggregation.TestingAggregationFunction;
-import io.trino.operator.scalar.AbstractTestFunctions;
 import io.trino.spi.Page;
 import io.trino.spi.block.Block;
 import io.trino.spi.block.BlockBuilder;
-import io.trino.sql.tree.QualifiedName;
-import org.testng.annotations.BeforeClass;
-import org.testng.annotations.DataProvider;
-import org.testng.annotations.Test;
+import io.trino.spi.block.RunLengthEncodedBlock;
+import io.trino.testing.QueryRunner;
+import io.trino.testing.StandaloneQueryRunner;
+import org.junit.jupiter.api.Test;
 
 import java.util.List;
 import java.util.OptionalInt;
@@ -48,55 +50,49 @@ import static io.trino.plugin.geospatial.GeometryType.GEOMETRY;
 import static io.trino.spi.type.IntegerType.INTEGER;
 import static io.trino.sql.analyzer.TypeSignatureProvider.fromTypes;
 import static io.trino.sql.planner.plan.AggregationNode.Step.SINGLE;
+import static io.trino.testing.TestingSession.testSessionBuilder;
 import static java.math.RoundingMode.CEILING;
-import static org.testng.Assert.assertEquals;
+import static org.assertj.core.api.Assertions.assertThat;
 
 public class TestSpatialPartitioningInternalAggregation
-        extends AbstractTestFunctions
 {
-    @BeforeClass
-    public void setup()
+    @Test
+    public void test()
     {
-        functionAssertions.installPlugin(new GeoPlugin());
+        test(10);
+        test(100);
     }
 
-    @DataProvider(name = "partitionCount")
-    public static Object[][] partitionCountProvider()
-    {
-        return new Object[][] {{100}, {10}};
-    }
-
-    @Test(dataProvider = "partitionCount")
     public void test(int partitionCount)
     {
-        TestingAggregationFunction function = getFunction();
+        QueryRunner runner = new StandaloneQueryRunner(testSessionBuilder().build());
+        runner.installPlugin(new GeoPlugin());
+
+        TestingAggregationFunction function = new TestingFunctionResolution(runner)
+                .getAggregateFunction("spatial_partitioning", fromTypes(GEOMETRY, INTEGER));
+
         List<OGCGeometry> geometries = makeGeometries();
         Block geometryBlock = makeGeometryBlock(geometries);
 
-        Block partitionCountBlock = BlockAssertions.createRepeatedValuesBlock(partitionCount, geometries.size());
+        BlockBuilder blockBuilder = INTEGER.createFixedSizeBlockBuilder(1);
+        INTEGER.writeInt(blockBuilder, partitionCount);
+        Block partitionCountBlock = RunLengthEncodedBlock.create(blockBuilder.build(), geometries.size());
 
         Rectangle expectedExtent = new Rectangle(-10, -10, Math.nextUp(10.0), Math.nextUp(10.0));
-        String expectedValue = getSpatialPartitioning(expectedExtent, geometries, partitionCount);
+        Slice expectedValue = getSpatialPartitioning(expectedExtent, geometries, partitionCount);
 
         AggregatorFactory aggregatorFactory = function.createAggregatorFactory(SINGLE, Ints.asList(0, 1), OptionalInt.empty());
         Page page = new Page(geometryBlock, partitionCountBlock);
 
-        Aggregator aggregator = aggregatorFactory.createAggregator();
+        Aggregator aggregator = aggregatorFactory.createAggregator(new AggregationMetrics());
         aggregator.processPage(page);
         String aggregation = (String) BlockAssertions.getOnlyValue(function.getFinalType(), getFinalBlock(function.getFinalType(), aggregator));
-        assertEquals(aggregation, expectedValue);
+        assertThat(aggregation).isEqualTo(expectedValue.toStringUtf8());
 
-        GroupedAggregator groupedAggregator = aggregatorFactory.createGroupedAggregator();
-        groupedAggregator.processPage(createGroupByIdBlock(0, page.getPositionCount()), page);
+        GroupedAggregator groupedAggregator = aggregatorFactory.createGroupedAggregator(new AggregationMetrics());
+        groupedAggregator.processPage(0, createGroupByIdBlock(0, page.getPositionCount()), page);
         String groupValue = (String) getGroupValue(function.getFinalType(), groupedAggregator, 0);
-        assertEquals(groupValue, expectedValue);
-    }
-
-    private TestingAggregationFunction getFunction()
-    {
-        return functionAssertions.getFunctionResolution().getAggregateFunction(
-                QualifiedName.of("spatial_partitioning"),
-                fromTypes(GEOMETRY, INTEGER));
+        assertThat(groupValue).isEqualTo(expectedValue.toStringUtf8());
     }
 
     private List<OGCGeometry> makeGeometries()
@@ -138,7 +134,7 @@ public class TestSpatialPartitioningInternalAggregation
         return builder.build();
     }
 
-    private String getSpatialPartitioning(Rectangle extent, List<OGCGeometry> geometries, int partitionCount)
+    private Slice getSpatialPartitioning(Rectangle extent, List<OGCGeometry> geometries, int partitionCount)
     {
         ImmutableList.Builder<Rectangle> rectangles = ImmutableList.builder();
         for (OGCGeometry geometry : geometries) {

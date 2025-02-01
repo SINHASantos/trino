@@ -72,8 +72,14 @@ public final class ProtobufUtils
     public static FileDescriptor getFileDescriptor(String protoFile)
             throws DescriptorValidationException
     {
+        return getFileDescriptor(Optional.empty(), protoFile);
+    }
+
+    public static FileDescriptor getFileDescriptor(Optional<String> fileName, String protoFile)
+            throws DescriptorValidationException
+    {
         ProtoFileElement protoFileElement = ProtoParser.Companion.parse(Location.get(""), protoFile);
-        return getFileDescriptor(Optional.empty(), protoFileElement);
+        return getFileDescriptor(fileName, protoFileElement);
     }
 
     public static FileDescriptor getFileDescriptor(Optional<String> fileName, ProtoFileElement protoFileElement)
@@ -84,7 +90,7 @@ public final class ProtobufUtils
         int index = 0;
         for (String importStatement : protoFileElement.getImports()) {
             try {
-                FileDescriptor fileDescriptor = getFileDescriptor(getProtoFile(importStatement));
+                FileDescriptor fileDescriptor = getFileDescriptor(Optional.of(importStatement), getProtoFile(importStatement));
                 fileDescriptor.getMessageTypes().stream()
                         .map(Descriptor::getFullName)
                         .forEach(definedMessages::add);
@@ -253,16 +259,12 @@ public final class ProtobufUtils
 
     public static Label getLabel(Field.Label label)
     {
-        switch (label) {
-            case OPTIONAL:
-                return Label.LABEL_OPTIONAL;
-            case REPEATED:
-                return Label.LABEL_REPEATED;
-            case REQUIRED:
-                return Label.LABEL_REQUIRED;
-            default:
-                throw new IllegalArgumentException("Unknown label");
-        }
+        return switch (label) {
+            case OPTIONAL -> Label.LABEL_OPTIONAL;
+            case REPEATED -> Label.LABEL_REPEATED;
+            case REQUIRED -> Label.LABEL_REQUIRED;
+            default -> throw new IllegalArgumentException("Unknown label");
+        };
     }
 
     private static String getNameForMapField(String fieldName)

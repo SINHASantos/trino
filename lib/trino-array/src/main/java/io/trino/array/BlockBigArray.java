@@ -14,13 +14,12 @@
 package io.trino.array;
 
 import io.trino.spi.block.Block;
-import org.openjdk.jol.info.ClassLayout;
 
-import static java.lang.Math.toIntExact;
+import static io.airlift.slice.SizeOf.instanceSize;
 
 public final class BlockBigArray
 {
-    private static final int INSTANCE_SIZE = toIntExact(ClassLayout.parseClass(BlockBigArray.class).instanceSize());
+    private static final int INSTANCE_SIZE = instanceSize(BlockBigArray.class);
     private final ObjectBigArray<Block> array;
     private final ReferenceCountMap trackedObjects = new ReferenceCountMap();
     private long sizeOfBlocks;
@@ -61,10 +60,10 @@ public final class BlockBigArray
      */
     public void set(long index, Block value)
     {
-        Block currentValue = array.get(index);
-        if (currentValue != null) {
-            currentValue.retainedBytesForEachPart((object, size) -> {
-                if (currentValue == object) {
+        Block previousValue = array.getAndSet(index, value);
+        if (previousValue != null) {
+            previousValue.retainedBytesForEachPart((object, size) -> {
+                if (previousValue == object) {
                     // track instance size separately as the reference count for an instance is always 1
                     sizeOfBlocks -= size;
                     return;
@@ -88,7 +87,6 @@ public final class BlockBigArray
                 }
             });
         }
-        array.set(index, value);
     }
 
     /**

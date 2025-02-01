@@ -16,58 +16,53 @@ package io.trino.plugin.thrift.integration;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
-import com.google.common.io.Closer;
 import io.airlift.drift.server.DriftServer;
 import io.trino.Session;
 import io.trino.cost.ScalarStatsCalculator;
 import io.trino.metadata.TableHandle;
+import io.trino.plugin.base.util.AutoCloseableCloser;
 import io.trino.plugin.thrift.ThriftColumnHandle;
 import io.trino.plugin.thrift.ThriftPlugin;
 import io.trino.plugin.thrift.ThriftTableHandle;
 import io.trino.plugin.thrift.ThriftTransactionHandle;
+import io.trino.plugin.thrift.integration.ThriftQueryRunner.StartedServers;
 import io.trino.spi.connector.ColumnHandle;
 import io.trino.spi.connector.ConnectorTableHandle;
-import io.trino.spi.connector.SchemaTableName;
 import io.trino.spi.predicate.TupleDomain;
+import io.trino.sql.ir.Reference;
 import io.trino.sql.planner.Symbol;
 import io.trino.sql.planner.iterative.rule.PruneTableScanColumns;
 import io.trino.sql.planner.iterative.rule.PushProjectionIntoTableScan;
 import io.trino.sql.planner.iterative.rule.test.BaseRuleTest;
 import io.trino.sql.planner.plan.Assignments;
-import io.trino.sql.tree.SymbolReference;
-import io.trino.testing.LocalQueryRunner;
-import org.testng.annotations.AfterClass;
-import org.testng.annotations.Test;
+import io.trino.testing.PlanTester;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.TestInstance;
 
 import java.io.IOException;
-import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 
 import static com.google.common.collect.Iterables.getOnlyElement;
 import static io.trino.plugin.thrift.integration.ThriftQueryRunner.driftServerPort;
 import static io.trino.plugin.thrift.integration.ThriftQueryRunner.startThriftServers;
+import static io.trino.spi.type.BigintType.BIGINT;
 import static io.trino.spi.type.VarcharType.VARCHAR;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.expression;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.project;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.tableScan;
-import static io.trino.testing.TestingHandles.TEST_CATALOG_HANDLE;
 import static io.trino.testing.TestingHandles.TEST_CATALOG_NAME;
 import static io.trino.testing.TestingSession.testSessionBuilder;
 import static java.util.stream.Collectors.joining;
+import static org.junit.jupiter.api.TestInstance.Lifecycle.PER_CLASS;
 
+@TestInstance(PER_CLASS)
 public class TestThriftProjectionPushdown
         extends BaseRuleTest
 {
     private static final String TINY_SCHEMA = "tiny";
-    private List<DriftServer> servers;
-
-    private static final ThriftTableHandle NATION_THRIFT_TABLE = new ThriftTableHandle(new SchemaTableName(TINY_SCHEMA, "nation"));
-
-    private static final TableHandle NATION_TABLE = new TableHandle(
-            TEST_CATALOG_HANDLE,
-            NATION_THRIFT_TABLE,
-            ThriftTransactionHandle.INSTANCE);
+    private StartedServers startedServers;
 
     private static final Session SESSION = testSessionBuilder()
             .setCatalog(TEST_CATALOG_NAME)
@@ -75,10 +70,10 @@ public class TestThriftProjectionPushdown
             .build();
 
     @Override
-    protected Optional<LocalQueryRunner> createLocalQueryRunner()
+    protected Optional<PlanTester> createPlanTester()
     {
         try {
-            servers = startThriftServers(1, false);
+            startedServers = startThriftServers(1, false);
         }
         catch (Throwable t) {
             try {
@@ -91,7 +86,7 @@ public class TestThriftProjectionPushdown
             throw t;
         }
 
-        String addresses = servers.stream()
+        String addresses = startedServers.servers().stream()
                 .map(server -> "localhost:" + driftServerPort(server))
                 .collect(joining(","));
 
@@ -101,26 +96,28 @@ public class TestThriftProjectionPushdown
                 .put("trino-thrift.lookup-requests-concurrency", "2")
                 .buildOrThrow();
 
-        LocalQueryRunner runner = LocalQueryRunner.create(SESSION);
+        PlanTester runner = PlanTester.create(SESSION);
         runner.createCatalog(TEST_CATALOG_NAME, getOnlyElement(new ThriftPlugin().getConnectorFactories()), connectorProperties);
 
         return Optional.of(runner);
     }
 
-    @AfterClass(alwaysRun = true)
+    @AfterAll
     public void cleanup()
+            throws Exception
     {
-        if (servers != null) {
-            try (Closer closer = Closer.create()) {
-                for (DriftServer server : servers) {
+        if (startedServers != null) {
+            try (AutoCloseableCloser closer = AutoCloseableCloser.create()) {
+                for (DriftServer server : startedServers.servers()) {
                     closer.register(server::shutdown);
                 }
+                startedServers.resources().forEach(closer::register);
             }
             catch (IOException e) {
                 throw new RuntimeException(e);
             }
 
-            servers = null;
+            startedServers = null;
         }
     }
 
@@ -129,8 +126,7 @@ public class TestThriftProjectionPushdown
     {
         PushProjectionIntoTableScan pushProjectionIntoTableScan = new PushProjectionIntoTableScan(
                 tester().getPlannerContext(),
-                tester().getTypeAnalyzer(),
-                new ScalarStatsCalculator(tester().getPlannerContext(), tester().getTypeAnalyzer()));
+                new ScalarStatsCalculator(tester().getPlannerContext()));
 
         String columnName = "orderstatus";
         ColumnHandle columnHandle = new ThriftColumnHandle(columnName, VARCHAR, "", false);
@@ -150,7 +146,7 @@ public class TestThriftProjectionPushdown
                                     orderStatusSymbol.toSymbolReference()),
                             p.tableScan(
                                     new TableHandle(
-                                            TEST_CATALOG_HANDLE,
+                                            tester().getCurrentCatalogHandle(),
                                             tableWithColumns,
                                             ThriftTransactionHandle.INSTANCE),
                                     ImmutableList.of(orderStatusSymbol),
@@ -164,10 +160,8 @@ public class TestThriftProjectionPushdown
     {
         PushProjectionIntoTableScan pushProjectionIntoTableScan = new PushProjectionIntoTableScan(
                 tester().getPlannerContext(),
-                tester().getTypeAnalyzer(),
-                new ScalarStatsCalculator(tester().getPlannerContext(), tester().getTypeAnalyzer()));
+                new ScalarStatsCalculator(tester().getPlannerContext()));
 
-        TableHandle inputTableHandle = NATION_TABLE;
         String columnName = "orderstatus";
 
         ColumnHandle columnHandle = new ThriftColumnHandle(columnName, VARCHAR, "", false);
@@ -179,6 +173,7 @@ public class TestThriftProjectionPushdown
                 Optional.of(ImmutableSet.of(columnHandle)));
 
         tester().assertThat(pushProjectionIntoTableScan)
+                .withSession(SESSION)
                 .on(p -> {
                     Symbol orderStatusSymbol = p.symbol(columnName, VARCHAR);
                     return p.project(
@@ -186,13 +181,12 @@ public class TestThriftProjectionPushdown
                                     p.symbol("expr_2", VARCHAR),
                                     orderStatusSymbol.toSymbolReference()),
                             p.tableScan(
-                                    inputTableHandle,
+                                    tester().getCurrentCatalogTableHandle(TINY_SCHEMA, "nation"),
                                     ImmutableList.of(orderStatusSymbol),
                                     ImmutableMap.of(orderStatusSymbol, columnHandle)));
                 })
-                .withSession(SESSION)
                 .matches(project(
-                        ImmutableMap.of("expr_2", expression(new SymbolReference(columnName))),
+                        ImmutableMap.of("expr_2", expression(new Reference(VARCHAR, columnName))),
                         tableScan(
                                 projectedThriftHandle::equals,
                                 TupleDomain.all(),
@@ -208,6 +202,7 @@ public class TestThriftProjectionPushdown
         ThriftColumnHandle nameColumn = new ThriftColumnHandle("name", VARCHAR, "", false);
 
         tester().assertThat(rule)
+                .withSession(SESSION)
                 .on(p -> {
                     Symbol nationKey = p.symbol(nationKeyColumn.getColumnName(), VARCHAR);
                     Symbol name = p.symbol(nameColumn.getColumnName(), VARCHAR);
@@ -216,16 +211,15 @@ public class TestThriftProjectionPushdown
                                     p.symbol("expr", VARCHAR),
                                     nationKey.toSymbolReference()),
                             p.tableScan(
-                                    NATION_TABLE,
+                                    tester().getCurrentCatalogTableHandle(TINY_SCHEMA, "nation"),
                                     ImmutableList.of(nationKey, name),
                                     ImmutableMap.<Symbol, ColumnHandle>builder()
                                             .put(nationKey, nationKeyColumn)
                                             .put(name, nameColumn)
                                             .buildOrThrow()));
                 })
-                .withSession(SESSION)
                 .matches(project(
-                        ImmutableMap.of("expr", expression(new SymbolReference(nationKeyColumn.getColumnName()))),
+                        ImmutableMap.of("expr", expression(new Reference(BIGINT, nationKeyColumn.getColumnName()))),
                         tableScan(
                                 new ThriftTableHandle(
                                         TINY_SCHEMA,

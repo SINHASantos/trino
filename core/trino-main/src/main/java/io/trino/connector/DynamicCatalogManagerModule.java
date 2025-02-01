@@ -14,16 +14,15 @@
 package io.trino.connector;
 
 import com.google.inject.Binder;
+import com.google.inject.Inject;
 import com.google.inject.Scopes;
 import io.airlift.configuration.AbstractConfigurationAwareModule;
 import io.trino.connector.system.GlobalSystemConnector;
 import io.trino.metadata.CatalogManager;
 import io.trino.server.ServerConfig;
-
-import javax.inject.Inject;
+import io.trino.spi.catalog.CatalogStore;
 
 import static io.airlift.configuration.ConfigBinder.configBinder;
-import static io.trino.connector.CatalogStore.NO_STORED_CATALOGS;
 
 public class DynamicCatalogManagerModule
         extends AbstractConfigurationAwareModule
@@ -33,17 +32,15 @@ public class DynamicCatalogManagerModule
     {
         if (buildConfigObject(ServerConfig.class).isCoordinator()) {
             binder.bind(CoordinatorDynamicCatalogManager.class).in(Scopes.SINGLETON);
-            CatalogStoreConfig config = buildConfigObject(CatalogStoreConfig.class);
-            switch (config.getCatalogStoreKind()) {
-                case NONE -> binder.bind(CatalogStore.class).toInstance(NO_STORED_CATALOGS);
-                case FILE -> {
-                    configBinder(binder).bindConfig(StaticCatalogManagerConfig.class);
-                    binder.bind(CatalogStore.class).to(FileCatalogStore.class).in(Scopes.SINGLETON);
-                }
-            }
+            configBinder(binder).bindConfig(CatalogStoreConfig.class);
+            binder.bind(CatalogStoreManager.class).in(Scopes.SINGLETON);
+            binder.bind(CatalogStore.class).to(CatalogStoreManager.class).in(Scopes.SINGLETON);
             binder.bind(ConnectorServicesProvider.class).to(CoordinatorDynamicCatalogManager.class).in(Scopes.SINGLETON);
             binder.bind(CatalogManager.class).to(CoordinatorDynamicCatalogManager.class).in(Scopes.SINGLETON);
             binder.bind(CoordinatorLazyRegister.class).asEagerSingleton();
+
+            configBinder(binder).bindConfig(CatalogPruneTaskConfig.class);
+            binder.bind(CatalogPruneTask.class).in(Scopes.SINGLETON);
         }
         else {
             binder.bind(WorkerDynamicCatalogManager.class).in(Scopes.SINGLETON);

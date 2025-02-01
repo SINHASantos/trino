@@ -13,32 +13,49 @@
  */
 package io.trino.plugin.deltalake.metastore.glue;
 
-import com.amazonaws.auth.DefaultAWSCredentialsProviderChain;
 import io.trino.plugin.deltalake.BaseDeltaLakeRegisterTableProcedureTest;
-import io.trino.plugin.hive.metastore.HiveMetastore;
-import io.trino.plugin.hive.metastore.glue.DefaultGlueColumnStatisticsProviderFactory;
+import io.trino.plugin.deltalake.DeltaLakeQueryRunner;
 import io.trino.plugin.hive.metastore.glue.GlueHiveMetastore;
-import io.trino.plugin.hive.metastore.glue.GlueHiveMetastoreConfig;
+import io.trino.testing.QueryRunner;
+import org.junit.jupiter.api.AfterAll;
 
-import java.util.Optional;
+import java.nio.file.Files;
+import java.nio.file.Path;
 
-import static com.google.common.util.concurrent.MoreExecutors.directExecutor;
-import static io.trino.plugin.hive.HiveTestUtils.HDFS_ENVIRONMENT;
+import static com.google.common.io.MoreFiles.deleteRecursively;
+import static com.google.common.io.RecursiveDeleteOption.ALLOW_INSECURE;
+import static io.trino.plugin.hive.metastore.glue.TestingGlueHiveMetastore.createTestingGlueHiveMetastore;
+import static io.trino.testing.SystemEnvironmentUtils.requireEnv;
+import static io.trino.testing.TestingNames.randomNameSuffix;
 
 public class TestDeltaLakeRegisterTableProcedureWithGlue
         extends BaseDeltaLakeRegisterTableProcedureTest
 {
+    private GlueHiveMetastore metastore;
+    private String schema;
+
     @Override
-    protected HiveMetastore createTestMetastore(String dataDirectory)
+    protected QueryRunner createQueryRunner()
+            throws Exception
     {
-        return new GlueHiveMetastore(
-                HDFS_ENVIRONMENT,
-                new GlueHiveMetastoreConfig()
-                        .setDefaultWarehouseDir(dataDirectory),
-                DefaultAWSCredentialsProviderChain.getInstance(),
-                directExecutor(),
-                new DefaultGlueColumnStatisticsProviderFactory(directExecutor(), directExecutor()),
-                Optional.empty(),
-                table -> true);
+        Path warehouseDir = Files.createTempDirectory("warehouse-dir");
+        closeAfterClass(() -> deleteRecursively(warehouseDir, ALLOW_INSECURE));
+        metastore = createTestingGlueHiveMetastore(warehouseDir, this::closeAfterClass);
+        schema = "test_delta_lake_register_table" + randomNameSuffix();
+        return DeltaLakeQueryRunner.builder(schema)
+                .addDeltaProperty("hive.metastore", "glue")
+                .addDeltaProperty("hive.metastore.glue.region", requireEnv("AWS_REGION"))
+                .addDeltaProperty("hive.metastore.glue.default-warehouse-dir", warehouseDir.toUri().toString())
+                .addDeltaProperty("delta.unique-table-location", "true")
+                .addDeltaProperty("delta.register-table-procedure.enabled", "true")
+                .build();
+    }
+
+    @AfterAll
+    public void tearDown()
+    {
+        // Data is on the local disk and will be deleted by query runner cleanup
+        metastore.dropDatabase(schema, false);
+        metastore.shutdown();
     }
 }

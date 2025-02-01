@@ -19,6 +19,7 @@ import io.trino.matching.Pattern;
 import io.trino.plugin.base.aggregation.AggregateFunctionRule;
 import io.trino.plugin.jdbc.JdbcColumnHandle;
 import io.trino.plugin.jdbc.JdbcExpression;
+import io.trino.plugin.jdbc.expression.ParameterizedExpression;
 import io.trino.spi.connector.AggregateFunction;
 import io.trino.spi.expression.Variable;
 
@@ -27,10 +28,10 @@ import java.util.Optional;
 import static com.google.common.base.Verify.verify;
 import static io.trino.matching.Capture.newCapture;
 import static io.trino.plugin.base.aggregation.AggregateFunctionPatterns.basicAggregation;
-import static io.trino.plugin.base.aggregation.AggregateFunctionPatterns.expressionType;
 import static io.trino.plugin.base.aggregation.AggregateFunctionPatterns.functionName;
 import static io.trino.plugin.base.aggregation.AggregateFunctionPatterns.singleArgument;
-import static io.trino.plugin.base.aggregation.AggregateFunctionPatterns.variable;
+import static io.trino.plugin.base.expression.ConnectorExpressionPatterns.type;
+import static io.trino.plugin.base.expression.ConnectorExpressionPatterns.variable;
 import static io.trino.spi.type.DoubleType.DOUBLE;
 import static io.trino.spi.type.RealType.REAL;
 import static java.lang.String.format;
@@ -39,7 +40,7 @@ import static java.lang.String.format;
  * Implements {@code avg(float)}
  */
 public class ImplementAvgFloatingPoint
-        implements AggregateFunctionRule<JdbcExpression, String>
+        implements AggregateFunctionRule<JdbcExpression, ParameterizedExpression>
 {
     private static final Capture<Variable> ARGUMENT = newCapture();
 
@@ -50,19 +51,21 @@ public class ImplementAvgFloatingPoint
                 .with(functionName().equalTo("avg"))
                 .with(singleArgument().matching(
                         variable()
-                                .with(expressionType().matching(type -> type == REAL || type == DOUBLE))
+                                .with(type().matching(type -> type == REAL || type == DOUBLE))
                                 .capturedAs(ARGUMENT)));
     }
 
     @Override
-    public Optional<JdbcExpression> rewrite(AggregateFunction aggregateFunction, Captures captures, RewriteContext<String> context)
+    public Optional<JdbcExpression> rewrite(AggregateFunction aggregateFunction, Captures captures, RewriteContext<ParameterizedExpression> context)
     {
         Variable argument = captures.get(ARGUMENT);
         JdbcColumnHandle columnHandle = (JdbcColumnHandle) context.getAssignment(argument.getName());
         verify(aggregateFunction.getOutputType() == columnHandle.getColumnType());
 
+        ParameterizedExpression rewrittenArgument = context.rewriteExpression(argument).orElseThrow();
         return Optional.of(new JdbcExpression(
-                format("avg(%s)", context.rewriteExpression(argument).orElseThrow()),
+                format("avg(%s)", rewrittenArgument.expression()),
+                rewrittenArgument.parameters(),
                 columnHandle.getJdbcTypeHandle()));
     }
 }

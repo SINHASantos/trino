@@ -19,7 +19,6 @@ import com.google.common.collect.ImmutableList;
 import com.google.common.collect.Range;
 import io.trino.plugin.hive.HiveConfig;
 import io.trino.plugin.hive.HiveTimestampPrecision;
-import io.trino.plugin.hive.benchmark.StandardFileFormats;
 import io.trino.spi.Page;
 import io.trino.spi.block.Block;
 import io.trino.spi.connector.ConnectorPageSource;
@@ -28,29 +27,29 @@ import io.trino.spi.type.SqlTimestamp;
 import io.trino.spi.type.Type;
 import org.apache.hadoop.hive.serde2.objectinspector.ObjectInspector;
 import org.apache.hadoop.mapred.JobConf;
-import org.apache.parquet.hadoop.metadata.CompressionCodecName;
+import org.apache.parquet.format.CompressionCodec;
 import org.apache.parquet.schema.MessageType;
 import org.joda.time.DateTimeZone;
-import org.testng.annotations.DataProvider;
-import org.testng.annotations.Test;
+import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
-import java.util.Arrays;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Optional;
 
-import static com.google.common.collect.ImmutableList.toImmutableList;
-import static io.trino.hadoop.ConfigurationInstantiator.newEmptyConfiguration;
-import static io.trino.plugin.hive.HiveTestUtils.HDFS_ENVIRONMENT;
+import static com.google.common.collect.Iterables.cycle;
+import static com.google.common.collect.Iterables.limit;
+import static com.google.common.collect.Iterables.transform;
 import static io.trino.plugin.hive.HiveTestUtils.getHiveSession;
 import static io.trino.spi.type.BigintType.BIGINT;
 import static io.trino.spi.type.TimestampType.createTimestampType;
+import static io.trino.spi.type.Timestamps.MICROSECONDS_PER_MILLISECOND;
 import static io.trino.spi.type.Timestamps.NANOSECONDS_PER_MICROSECOND;
+import static io.trino.spi.type.Timestamps.NANOSECONDS_PER_MILLISECOND;
 import static io.trino.spi.type.Timestamps.PICOSECONDS_PER_NANOSECOND;
-import static io.trino.testing.DataProviders.toDataProvider;
 import static java.lang.Math.floorDiv;
 import static java.lang.Math.floorMod;
+import static java.util.Arrays.asList;
 import static java.util.Collections.singletonList;
 import static org.apache.hadoop.hive.serde2.objectinspector.ObjectInspectorFactory.getStandardStructObjectInspector;
 import static org.apache.hadoop.hive.serde2.objectinspector.primitive.PrimitiveObjectInspectorFactory.javaLongObjectInspector;
@@ -58,51 +57,76 @@ import static org.apache.parquet.column.ParquetProperties.WriterVersion.PARQUET_
 import static org.apache.parquet.hadoop.ParquetOutputFormat.WRITER_VERSION;
 import static org.apache.parquet.schema.MessageTypeParser.parseMessageType;
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.testng.Assert.assertFalse;
-import static org.testng.Assert.assertTrue;
 
 public class TestTimestamp
 {
-    @DataProvider
-    public static Object[][] timestampPrecisionProvider()
-    {
-        return Arrays.stream(HiveTimestampPrecision.values()).collect(toDataProvider());
-    }
-
-    @Test(dataProvider = "timestampPrecisionProvider")
-    public void testTimestampBackedByInt64(HiveTimestampPrecision timestamp)
+    @Test
+    public void testTimestampBackedByInt64WithDifferentTimezone()
             throws Exception
     {
-        String logicalAnnotation = switch (timestamp) {
-            case MILLISECONDS -> "TIMESTAMP(MILLIS,true)";
-            case MICROSECONDS -> "TIMESTAMP(MICROS,true)";
-            case NANOSECONDS -> "TIMESTAMP(NANOS,true)";
-        };
-        MessageType parquetSchema = parseMessageType("message hive_timestamp { optional int64 test (" + logicalAnnotation + "); }");
-        List<Long> writeValues = ContiguousSet.create(Range.closedOpen((long) -1_000, (long) 1_000), DiscreteDomain.longs()).stream()
-                .collect(toImmutableList());
-        List<SqlTimestamp> timestampReadValues = writeValues.stream()
-                .map(value -> switch (timestamp) {
-                    case MILLISECONDS -> SqlTimestamp.fromMillis(timestamp.getPrecision(), value);
-                    case MICROSECONDS -> SqlTimestamp.newInstance(timestamp.getPrecision(), value, 0);
-                    case NANOSECONDS -> SqlTimestamp.newInstance(
+        testTimestampBackedByInt64(DateTimeZone.forID("America/New_York"));
+        testTimestampBackedByInt64(DateTimeZone.forID("UTC"));
+    }
+
+    private void testTimestampBackedByInt64(DateTimeZone dateTimeZone)
+            throws Exception
+    {
+        for (HiveTimestampPrecision timestamp : HiveTimestampPrecision.values()) {
+            String logicalAnnotation = switch (timestamp) {
+                case MILLISECONDS -> "TIMESTAMP(MILLIS,true)";
+                case MICROSECONDS -> "TIMESTAMP(MICROS,true)";
+                case NANOSECONDS -> "TIMESTAMP(NANOS,true)";
+            };
+            MessageType parquetSchema = parseMessageType("message hive_timestamp { optional int64 test (" + logicalAnnotation + "); }");
+
+            Iterable<Long> writeNullableDictionaryValues = limit(cycle(asList(1L, null, 3L, 5L, null, null, null, 7L, 11L, null, 13L, 17L)), 30_000);
+            testRoundTrip(parquetSchema, writeNullableDictionaryValues, timestamp, dateTimeZone);
+
+            Iterable<Long> writeDictionaryValues = limit(cycle(asList(1L, 3L, 5L, 7L, 11L, 13L, 17L)), 30_000);
+            testRoundTrip(parquetSchema, writeDictionaryValues, timestamp, dateTimeZone);
+
+            Iterable<Long> writeValues = ContiguousSet.create(Range.closedOpen((long) -1_000, (long) 1_000), DiscreteDomain.longs());
+            testRoundTrip(parquetSchema, writeValues, timestamp, dateTimeZone);
+        }
+    }
+
+    private static void testRoundTrip(MessageType parquetSchema, Iterable<Long> writeValues, HiveTimestampPrecision timestamp, DateTimeZone dateTimeZone)
+            throws Exception
+    {
+        Iterable<SqlTimestamp> timestampReadValues = transform(writeValues, value -> {
+            if (value == null) {
+                return null;
+            }
+            return switch (timestamp) {
+                case MILLISECONDS -> SqlTimestamp.fromMillis(
+                        timestamp.getPrecision(),
+                        dateTimeZone.convertUTCToLocal(value));
+                case MICROSECONDS -> SqlTimestamp.newInstance(
+                        timestamp.getPrecision(),
+                        (dateTimeZone.convertUTCToLocal(floorDiv(value, MICROSECONDS_PER_MILLISECOND)) * MICROSECONDS_PER_MILLISECOND)
+                                + floorMod(value, MICROSECONDS_PER_MILLISECOND),
+                        0);
+                case NANOSECONDS -> {
+                    long localMicros = dateTimeZone.convertUTCToLocal(floorDiv(value, NANOSECONDS_PER_MICROSECOND * MICROSECONDS_PER_MILLISECOND));
+                    yield SqlTimestamp.newInstance(
                             timestamp.getPrecision(),
-                            floorDiv(value, NANOSECONDS_PER_MICROSECOND),
+                            (localMicros * MICROSECONDS_PER_MILLISECOND) + floorMod(value, NANOSECONDS_PER_MILLISECOND) / MICROSECONDS_PER_MILLISECOND,
                             floorMod(value, NANOSECONDS_PER_MICROSECOND) * PICOSECONDS_PER_NANOSECOND);
-                })
-                .collect(toImmutableList());
+                }
+            };
+        });
 
         List<ObjectInspector> objectInspectors = singletonList(javaLongObjectInspector);
         List<String> columnNames = ImmutableList.of("test");
 
         try (ParquetTester.TempFile tempFile = new ParquetTester.TempFile("test", "parquet")) {
-            JobConf jobConf = new JobConf(newEmptyConfiguration());
+            JobConf jobConf = new JobConf(false);
             jobConf.setEnum(WRITER_VERSION, PARQUET_1_0);
 
             ParquetTester.writeParquetColumn(
                     jobConf,
                     tempFile.getFile(),
-                    CompressionCodecName.SNAPPY,
+                    CompressionCodec.SNAPPY,
                     ParquetTester.createTableProperties(columnNames, objectInspectors),
                     getStandardStructObjectInspector(columnNames, objectInspectors),
                     new Iterator<?>[] {writeValues.iterator()},
@@ -110,24 +134,22 @@ public class TestTimestamp
                     false,
                     DateTimeZone.getDefault());
 
-            ConnectorSession session = getHiveSession(new HiveConfig(), new ParquetReaderConfig().setOptimizedReaderEnabled(false));
-            testReadingAs(createTimestampType(timestamp.getPrecision()), session, tempFile, columnNames, timestampReadValues);
-            testReadingAs(BIGINT, session, tempFile, columnNames, writeValues);
-
-            session = getHiveSession(new HiveConfig(), new ParquetReaderConfig().setOptimizedReaderEnabled(true));
-            testReadingAs(createTimestampType(timestamp.getPrecision()), session, tempFile, columnNames, timestampReadValues);
-            testReadingAs(BIGINT, session, tempFile, columnNames, writeValues);
+            ConnectorSession session = getHiveSession(new HiveConfig());
+            testReadingAs(createTimestampType(timestamp.getPrecision()), session, tempFile, columnNames, timestampReadValues, dateTimeZone);
+            testReadingAs(BIGINT, session, tempFile, columnNames, writeValues, dateTimeZone);
         }
     }
 
-    private static void testReadingAs(Type type, ConnectorSession session, ParquetTester.TempFile tempFile, List<String> columnNames, List<?> expectedValues)
+    private static void testReadingAs(Type type, ConnectorSession session, ParquetTester.TempFile tempFile, List<String> columnNames, Iterable<?> expectedValues, DateTimeZone dateTimeZone)
              throws IOException
     {
         Iterator<?> expected = expectedValues.iterator();
-        try (ConnectorPageSource pageSource = StandardFileFormats.TRINO_PARQUET.createFileFormatReader(session, HDFS_ENVIRONMENT, tempFile.getFile(), columnNames, ImmutableList.of(type))) {
+        try (ConnectorPageSource pageSource = ParquetUtil.createPageSource(session, tempFile.getFile(), columnNames, ImmutableList.of(type), dateTimeZone)) {
             // skip a page to exercise the decoder's skip() logic
             Page firstPage = pageSource.getNextPage();
-            assertTrue(firstPage.getPositionCount() > 0, "Expected first page to have at least 1 row");
+            assertThat(firstPage.getPositionCount() > 0)
+                    .describedAs("Expected first page to have at least 1 row")
+                    .isTrue();
 
             for (int i = 0; i < firstPage.getPositionCount(); i++) {
                 expected.next();
@@ -151,7 +173,9 @@ public class TestTimestamp
                     .withFailMessage("Expected more than one page but processed %s", pageCount)
                     .isGreaterThan(1);
 
-            assertFalse(expected.hasNext(), "Read fewer values than expected");
+            assertThat(expected.hasNext())
+                    .describedAs("Read fewer values than expected")
+                    .isFalse();
         }
     }
 }

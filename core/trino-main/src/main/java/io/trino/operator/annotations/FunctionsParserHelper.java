@@ -16,6 +16,7 @@ package io.trino.operator.annotations;
 import com.google.common.collect.HashMultimap;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
+import io.trino.spi.function.Constraint;
 import io.trino.spi.function.Description;
 import io.trino.spi.function.IsNull;
 import io.trino.spi.function.LiteralParameters;
@@ -30,9 +31,7 @@ import io.trino.spi.function.TypeVariableConstraint;
 import io.trino.spi.function.TypeVariableConstraint.TypeVariableConstraintBuilder;
 import io.trino.spi.type.TypeSignature;
 import io.trino.spi.type.TypeSignatureParameter;
-import io.trino.type.Constraint;
-
-import javax.annotation.Nullable;
+import jakarta.annotation.Nullable;
 
 import java.lang.annotation.Annotation;
 import java.lang.reflect.AnnotatedElement;
@@ -59,17 +58,18 @@ import static io.trino.spi.function.OperatorType.COMPARISON_UNORDERED_FIRST;
 import static io.trino.spi.function.OperatorType.COMPARISON_UNORDERED_LAST;
 import static io.trino.spi.function.OperatorType.EQUAL;
 import static io.trino.spi.function.OperatorType.HASH_CODE;
+import static io.trino.spi.function.OperatorType.IDENTICAL;
 import static io.trino.spi.function.OperatorType.INDETERMINATE;
-import static io.trino.spi.function.OperatorType.IS_DISTINCT_FROM;
 import static io.trino.spi.function.OperatorType.LESS_THAN;
 import static io.trino.spi.function.OperatorType.LESS_THAN_OR_EQUAL;
+import static io.trino.spi.function.OperatorType.READ_VALUE;
 import static io.trino.spi.function.OperatorType.XX_HASH_64;
 import static io.trino.sql.analyzer.TypeSignatureTranslator.parseTypeSignature;
 import static java.lang.String.CASE_INSENSITIVE_ORDER;
 
 public final class FunctionsParserHelper
 {
-    private static final Set<OperatorType> COMPARABLE_TYPE_OPERATORS = ImmutableSet.of(EQUAL, HASH_CODE, XX_HASH_64, IS_DISTINCT_FROM, INDETERMINATE);
+    private static final Set<OperatorType> COMPARABLE_TYPE_OPERATORS = ImmutableSet.of(EQUAL, HASH_CODE, XX_HASH_64, IDENTICAL, INDETERMINATE);
     private static final Set<OperatorType> ORDERABLE_TYPE_OPERATORS = ImmutableSet.of(COMPARISON_UNORDERED_LAST, COMPARISON_UNORDERED_FIRST, LESS_THAN, LESS_THAN_OR_EQUAL);
 
     private FunctionsParserHelper()
@@ -96,8 +96,7 @@ public final class FunctionsParserHelper
         HashMultimap<String, String> castableTo = HashMultimap.create();
         HashMultimap<String, String> castableFrom = HashMultimap.create();
         for (ImplementationDependency dependency : dependencies) {
-            if (dependency instanceof OperatorImplementationDependency) {
-                OperatorImplementationDependency operatorDependency = (OperatorImplementationDependency) dependency;
+            if (dependency instanceof OperatorImplementationDependency operatorDependency) {
                 OperatorType operator = operatorDependency.getOperator();
                 List<TypeSignature> argumentTypes = operatorDependency.getArgumentTypes();
                 if (COMPARABLE_TYPE_OPERATORS.contains(operator)) {
@@ -120,13 +119,14 @@ public final class FunctionsParserHelper
                         verifyTypeSignatureDoesNotContainAnyTypeParameters(typeSignature, typeSignature, typeParameterNames);
                     }
                 }
+                else if (operator == READ_VALUE) {
+                    verifyOperatorSignature(operator, argumentTypes);
+                }
                 else {
                     throw new IllegalArgumentException("Operator dependency on " + operator + " is not allowed");
                 }
             }
-            else if (dependency instanceof CastImplementationDependency) {
-                CastImplementationDependency castImplementationDependency = (CastImplementationDependency) dependency;
-
+            else if (dependency instanceof CastImplementationDependency castImplementationDependency) {
                 TypeSignature fromType = castImplementationDependency.getFromType();
                 TypeSignature toType = castImplementationDependency.getToType();
                 if (typeParameterNames.contains(fromType.getBase())) {

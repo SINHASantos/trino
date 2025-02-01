@@ -16,7 +16,11 @@ package io.trino.parquet.reader.flat;
 import io.trino.spi.block.Block;
 import io.trino.spi.block.LongArrayBlock;
 
+import java.util.List;
 import java.util.Optional;
+
+import static io.airlift.slice.SizeOf.sizeOf;
+import static java.lang.Math.toIntExact;
 
 public class LongColumnAdapter
         implements ColumnAdapter<long[]>
@@ -45,5 +49,40 @@ public class LongColumnAdapter
     public void copyValue(long[] source, int sourceIndex, long[] destination, int destinationIndex)
     {
         destination[destinationIndex] = source[sourceIndex];
+    }
+
+    @Override
+    public void decodeDictionaryIds(long[] values, int offset, int length, int[] ids, long[] dictionary)
+    {
+        for (int i = 0; i < length; i++) {
+            values[offset + i] = dictionary[ids[i]];
+        }
+    }
+
+    @Override
+    public long getSizeInBytes(long[] values)
+    {
+        return sizeOf(values);
+    }
+
+    @Override
+    public long[] merge(List<long[]> buffers)
+    {
+        return concatLongArrays(buffers);
+    }
+
+    static long[] concatLongArrays(List<long[]> buffers)
+    {
+        long resultSize = 0;
+        for (long[] buffer : buffers) {
+            resultSize += buffer.length;
+        }
+        long[] result = new long[toIntExact(resultSize)];
+        int offset = 0;
+        for (long[] buffer : buffers) {
+            System.arraycopy(buffer, 0, result, offset, buffer.length);
+            offset += buffer.length;
+        }
+        return result;
     }
 }

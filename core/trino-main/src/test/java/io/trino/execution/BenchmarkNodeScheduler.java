@@ -15,6 +15,7 @@ package io.trino.execution;
 
 import com.google.common.base.Splitter;
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableMultimap;
 import com.google.common.collect.Iterators;
 import com.google.common.collect.Multimap;
@@ -53,7 +54,6 @@ import org.openjdk.jmh.annotations.Setup;
 import org.openjdk.jmh.annotations.State;
 import org.openjdk.jmh.annotations.TearDown;
 import org.openjdk.jmh.annotations.Warmup;
-import org.openjdk.jol.info.ClassLayout;
 
 import java.net.URI;
 import java.util.ArrayList;
@@ -70,11 +70,12 @@ import java.util.concurrent.TimeUnit;
 
 import static io.airlift.concurrent.Threads.daemonThreadsNamed;
 import static io.airlift.slice.SizeOf.estimatedSizeOf;
+import static io.airlift.slice.SizeOf.instanceSize;
 import static io.trino.SystemSessionProperties.MAX_UNACKNOWLEDGED_SPLITS_PER_TASK;
 import static io.trino.testing.TestingHandles.TEST_CATALOG_HANDLE;
-import static java.lang.Math.toIntExact;
 import static java.util.concurrent.Executors.newCachedThreadPool;
 import static java.util.concurrent.Executors.newScheduledThreadPool;
+import static java.util.stream.Collectors.joining;
 
 @SuppressWarnings("MethodMayBeStatic")
 @State(Scope.Thread)
@@ -188,7 +189,7 @@ public class BenchmarkNodeScheduler
                     .setMaxSplitsPerNode(MAX_SPLITS_PER_NODE)
                     .setIncludeCoordinator(false)
                     .setNodeSchedulerPolicy(policy)
-                    .setMaxPendingSplitsPerTask(MAX_PENDING_SPLITS_PER_TASK_PER_NODE);
+                    .setMinPendingSplitsPerTask(MAX_PENDING_SPLITS_PER_TASK_PER_NODE);
         }
 
         private NodeSelectorFactory getNodeSelectorFactory(InternalNodeManager nodeManager, NodeTaskMap nodeTaskMap)
@@ -249,7 +250,7 @@ public class BenchmarkNodeScheduler
     private static class TestSplitRemote
             implements ConnectorSplit
     {
-        private static final int INSTANCE_SIZE = toIntExact(ClassLayout.parseClass(TestSplitRemote.class).instanceSize());
+        private static final int INSTANCE_SIZE = instanceSize(TestSplitRemote.class);
 
         private final List<HostAddress> hosts;
 
@@ -259,21 +260,15 @@ public class BenchmarkNodeScheduler
         }
 
         @Override
-        public boolean isRemotelyAccessible()
-        {
-            return true;
-        }
-
-        @Override
         public List<HostAddress> getAddresses()
         {
             return hosts;
         }
 
         @Override
-        public Object getInfo()
+        public Map<String, String> getSplitInfo()
         {
-            return this;
+            return ImmutableMap.of("addresses", hosts.stream().map(HostAddress::toString).collect(joining(",")));
         }
 
         @Override

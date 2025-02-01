@@ -17,23 +17,25 @@ import com.google.common.collect.ImmutableList;
 import com.google.common.util.concurrent.FutureCallback;
 import com.google.common.util.concurrent.Futures;
 import com.google.common.util.concurrent.ListenableFuture;
+import com.google.errorprone.annotations.ThreadSafe;
+import com.google.errorprone.annotations.concurrent.GuardedBy;
 import io.airlift.slice.SizeOf;
 import io.airlift.slice.Slice;
 import io.airlift.slice.SliceOutput;
 import io.airlift.slice.Slices;
+import io.trino.plugin.exchange.filesystem.MetricsBuilder.CounterMetricBuilder;
+import io.trino.plugin.exchange.filesystem.MetricsBuilder.DistributionMetricBuilder;
 import io.trino.spi.TrinoException;
 import io.trino.spi.exchange.ExchangeSink;
 import io.trino.spi.exchange.ExchangeSinkInstanceHandle;
-import org.openjdk.jol.info.ClassLayout;
-
-import javax.annotation.concurrent.GuardedBy;
-import javax.annotation.concurrent.ThreadSafe;
+import io.trino.spi.metrics.Metrics;
 
 import java.net.URI;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Queue;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
@@ -50,11 +52,11 @@ import static io.airlift.concurrent.MoreFutures.addSuccessCallback;
 import static io.airlift.concurrent.MoreFutures.asVoid;
 import static io.airlift.concurrent.MoreFutures.toCompletableFuture;
 import static io.airlift.slice.SizeOf.estimatedSizeOf;
+import static io.airlift.slice.SizeOf.instanceSize;
 import static io.airlift.units.DataSize.succinctBytes;
 import static io.trino.spi.StandardErrorCode.NOT_SUPPORTED;
 import static java.lang.Math.max;
 import static java.lang.Math.min;
-import static java.lang.Math.toIntExact;
 import static java.lang.String.format;
 import static java.util.Objects.requireNonNull;
 import static java.util.concurrent.CompletableFuture.completedFuture;
@@ -67,7 +69,7 @@ public class FileSystemExchangeSink
     public static final String COMMITTED_MARKER_FILE_NAME = "committed";
     public static final String DATA_FILE_SUFFIX = ".data";
 
-    private static final int INSTANCE_SIZE = toIntExact(ClassLayout.parseClass(FileSystemExchangeSink.class).instanceSize());
+    private static final int INSTANCE_SIZE = instanceSize(FileSystemExchangeSink.class);
 
     private final FileSystemExchangeStorage exchangeStorage;
     private final FileSystemExchangeStats stats;
@@ -81,6 +83,10 @@ public class FileSystemExchangeSink
     private final Map<Integer, BufferedStorageWriter> writersMap = new ConcurrentHashMap<>();
     private final AtomicReference<Throwable> failure = new AtomicReference<>();
     private volatile boolean closed;
+
+    private final MetricsBuilder metricsBuilder = new MetricsBuilder();
+    private final CounterMetricBuilder totalFilesMetric = metricsBuilder.getCounterMetric("FileSystemExchangeSource.filesTotal");
+    private final DistributionMetricBuilder fileSizeMetric = metricsBuilder.getDistributionMetric("FileSystemExchangeSource.fileSize");
 
     public FileSystemExchangeSink(
             FileSystemExchangeStorage exchangeStorage,
@@ -156,7 +162,9 @@ public class FileSystemExchangeSink
                 bufferPool,
                 failure,
                 maxPageStorageSizeInBytes,
-                maxFileSizeInBytes);
+                maxFileSizeInBytes,
+                totalFilesMetric,
+                fileSizeMetric);
     }
 
     @Override
@@ -179,7 +187,7 @@ public class FileSystemExchangeSink
         addSuccessCallback(finishFuture, this::destroy);
         finishFuture = Futures.transformAsync(
                 finishFuture,
-                ignored -> exchangeStorage.createEmptyFile(outputDirectory.resolve(COMMITTED_MARKER_FILE_NAME)),
+                _ -> exchangeStorage.createEmptyFile(outputDirectory.resolve(COMMITTED_MARKER_FILE_NAME)),
                 directExecutor());
         Futures.addCallback(finishFuture, new FutureCallback<>()
         {
@@ -213,8 +221,14 @@ public class FileSystemExchangeSink
 
         return stats.getExchangeSinkAbort().record(toCompletableFuture(Futures.transformAsync(
                 abortFuture,
-                ignored -> exchangeStorage.deleteRecursively(ImmutableList.of(outputDirectory)),
+                _ -> exchangeStorage.deleteRecursively(ImmutableList.of(outputDirectory)),
                 directExecutor())));
+    }
+
+    @Override
+    public Optional<Metrics> getMetrics()
+    {
+        return Optional.of(metricsBuilder.buildMetrics());
     }
 
     private void throwIfFailed()
@@ -235,7 +249,7 @@ public class FileSystemExchangeSink
     @ThreadSafe
     private static class BufferedStorageWriter
     {
-        private static final int INSTANCE_SIZE = toIntExact(ClassLayout.parseClass(BufferedStorageWriter.class).instanceSize());
+        private static final int INSTANCE_SIZE = instanceSize(BufferedStorageWriter.class);
 
         private final FileSystemExchangeStorage exchangeStorage;
         private final FileSystemExchangeStats stats;
@@ -246,6 +260,8 @@ public class FileSystemExchangeSink
         private final AtomicReference<Throwable> failure;
         private final int maxPageStorageSizeInBytes;
         private final long maxFileSizeInBytes;
+        private final CounterMetricBuilder totalFilesMetric;
+        private final DistributionMetricBuilder fileSizeMetric;
 
         @GuardedBy("this")
         private ExchangeStorageWriter currentWriter;
@@ -267,7 +283,9 @@ public class FileSystemExchangeSink
                 BufferPool bufferPool,
                 AtomicReference<Throwable> failure,
                 int maxPageStorageSizeInBytes,
-                long maxFileSizeInBytes)
+                long maxFileSizeInBytes,
+                CounterMetricBuilder totalFilesMetric,
+                DistributionMetricBuilder fileSizeMetric)
         {
             this.exchangeStorage = requireNonNull(exchangeStorage, "exchangeStorage is null");
             this.stats = requireNonNull(stats, "stats is null");
@@ -278,6 +296,8 @@ public class FileSystemExchangeSink
             this.failure = requireNonNull(failure, "failure is null");
             this.maxPageStorageSizeInBytes = maxPageStorageSizeInBytes;
             this.maxFileSizeInBytes = maxFileSizeInBytes;
+            this.totalFilesMetric = requireNonNull(totalFilesMetric, "totalFilesMetric is null");
+            this.fileSizeMetric = requireNonNull(fileSizeMetric, "fileSizeMetric is null");
 
             setupWriterForNextPart();
         }
@@ -299,9 +319,13 @@ public class FileSystemExchangeSink
                 setupWriterForNextPart();
                 currentFileSize = 0;
                 currentBuffer = null;
+                fileSizeMetric.add(currentFileSize);
+                totalFilesMetric.increment();
             }
 
-            writeInternal(Slices.wrappedIntArray(data.length()));
+            Slice sizeSlice = Slices.allocate(Integer.BYTES);
+            sizeSlice.setInt(0, data.length());
+            writeInternal(sizeSlice);
             writeInternal(data);
 
             currentFileSize += requiredPageStorageSize;
@@ -385,7 +409,7 @@ public class FileSystemExchangeSink
     @ThreadSafe
     private static class BufferPool
     {
-        private static final int INSTANCE_SIZE = toIntExact(ClassLayout.parseClass(BufferPool.class).instanceSize());
+        private static final int INSTANCE_SIZE = instanceSize(BufferPool.class);
 
         private final FileSystemExchangeStats stats;
         private final int maxNumBuffers;
@@ -485,6 +509,7 @@ public class FileSystemExchangeSink
             completableFuture.complete(null);
         }
 
+        @GuardedBy("this")
         private boolean hasFreeBuffers()
         {
             if (!freeBuffersQueue.isEmpty()) {

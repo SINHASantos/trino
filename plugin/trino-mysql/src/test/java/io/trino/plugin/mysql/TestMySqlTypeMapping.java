@@ -13,12 +13,12 @@
  */
 package io.trino.plugin.mysql;
 
-import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import io.trino.Session;
 import io.trino.plugin.jdbc.UnsupportedTypeHandling;
 import io.trino.spi.type.TimeZoneKey;
 import io.trino.testing.AbstractTestQueryFramework;
+import io.trino.testing.DistributedQueryRunner;
 import io.trino.testing.QueryRunner;
 import io.trino.testing.TestingSession;
 import io.trino.testing.datatype.CreateAndInsertDataSetup;
@@ -29,13 +29,18 @@ import io.trino.testing.sql.SqlExecutor;
 import io.trino.testing.sql.TestTable;
 import io.trino.testing.sql.TrinoSqlExecutor;
 import org.intellij.lang.annotations.Language;
-import org.testng.annotations.BeforeClass;
-import org.testng.annotations.DataProvider;
-import org.testng.annotations.Test;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.TestInstance;
+import org.junit.jupiter.api.parallel.Execution;
 
 import java.math.RoundingMode;
+import java.sql.Connection;
+import java.sql.DriverManager;
+import java.sql.Statement;
 import java.time.LocalDate;
 import java.time.ZoneId;
+import java.util.Map;
 
 import static com.google.common.base.Preconditions.checkState;
 import static com.google.common.base.Verify.verify;
@@ -46,7 +51,6 @@ import static io.trino.plugin.jdbc.DecimalSessionSessionProperties.DECIMAL_MAPPI
 import static io.trino.plugin.jdbc.DecimalSessionSessionProperties.DECIMAL_ROUNDING_MODE;
 import static io.trino.plugin.jdbc.TypeHandlingJdbcSessionProperties.UNSUPPORTED_TYPE_HANDLING;
 import static io.trino.plugin.jdbc.UnsupportedTypeHandling.CONVERT_TO_VARCHAR;
-import static io.trino.plugin.mysql.MySqlQueryRunner.createMySqlQueryRunner;
 import static io.trino.spi.type.BigintType.BIGINT;
 import static io.trino.spi.type.BooleanType.BOOLEAN;
 import static io.trino.spi.type.CharType.createCharType;
@@ -58,6 +62,7 @@ import static io.trino.spi.type.RealType.REAL;
 import static io.trino.spi.type.SmallintType.SMALLINT;
 import static io.trino.spi.type.TimeType.createTimeType;
 import static io.trino.spi.type.TimestampType.createTimestampType;
+import static io.trino.spi.type.TimestampWithTimeZoneType.createTimestampWithTimeZoneType;
 import static io.trino.spi.type.TinyintType.TINYINT;
 import static io.trino.spi.type.VarbinaryType.VARBINARY;
 import static io.trino.spi.type.VarcharType.createUnboundedVarcharType;
@@ -68,8 +73,13 @@ import static java.math.RoundingMode.HALF_UP;
 import static java.math.RoundingMode.UNNECESSARY;
 import static java.time.ZoneOffset.UTC;
 import static java.util.Arrays.asList;
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.junit.jupiter.api.TestInstance.Lifecycle.PER_CLASS;
+import static org.junit.jupiter.api.parallel.ExecutionMode.CONCURRENT;
 
+@TestInstance(PER_CLASS)
+@Execution(CONCURRENT)
 public class TestMySqlTypeMapping
         extends AbstractTestQueryFramework
 {
@@ -79,11 +89,11 @@ public class TestMySqlTypeMapping
     // no DST in 1970, but has DST in later years (e.g. 2018)
     private final ZoneId vilnius = ZoneId.of("Europe/Vilnius");
 
-    @BeforeClass
+    @BeforeAll
     public void setUp()
     {
         checkState(jvmZone.getId().equals("America/Bahia_Banderas"), "This test assumes certain JVM time zone");
-        LocalDate dateOfLocalTimeChangeForwardAtMidnightInJvmZone = LocalDate.of(1970, 1, 1);
+        LocalDate dateOfLocalTimeChangeForwardAtMidnightInJvmZone = LocalDate.of(1932, 4, 1);
         verify(jvmZone.getRules().getValidOffsets(dateOfLocalTimeChangeForwardAtMidnightInJvmZone.atStartOfDay()).isEmpty());
 
         LocalDate dateOfLocalTimeChangeForwardAtMidnightInSomeZone = LocalDate.of(1983, 4, 1);
@@ -97,7 +107,8 @@ public class TestMySqlTypeMapping
             throws Exception
     {
         mySqlServer = closeAfterClass(new TestingMySqlServer());
-        return createMySqlQueryRunner(mySqlServer, ImmutableMap.of(), ImmutableMap.of(), ImmutableList.of());
+        return MySqlQueryRunner.builder(mySqlServer)
+                .build();
     }
 
     @Test
@@ -424,8 +435,14 @@ public class TestMySqlTypeMapping
         }
     }
 
-    @Test(dataProvider = "testDecimalExceedingPrecisionMaxProvider")
-    public void testDecimalExceedingPrecisionMaxWithSupportedValues(int typePrecision, int typeScale)
+    @Test
+    public void testDecimalExceedingPrecisionMaxWithSupportedValues()
+    {
+        testDecimalExceedingPrecisionMaxWithSupportedValues(40, 8);
+        testDecimalExceedingPrecisionMaxWithSupportedValues(50, 10);
+    }
+
+    private void testDecimalExceedingPrecisionMaxWithSupportedValues(int typePrecision, int typeScale)
     {
         try (TestTable testTable = new TestTable(
                 mySqlServer::execute,
@@ -473,15 +490,6 @@ public class TestMySqlTypeMapping
                     "SELECT d_col FROM " + testTable.getName(),
                     "VALUES (12.01), (-12.01), (123), (-123), (1.12345678), (-1.12345678)");
         }
-    }
-
-    @DataProvider
-    public Object[][] testDecimalExceedingPrecisionMaxProvider()
-    {
-        return new Object[][] {
-                {40, 8},
-                {50, 10},
-        };
     }
 
     private Session sessionWithDecimalMappingAllowOverflow(RoundingMode roundingMode, int scale)
@@ -549,8 +557,19 @@ public class TestMySqlTypeMapping
                 .execute(getQueryRunner(), mysqlCreateAndInsert("tpch.test_binary"));
     }
 
-    @Test(dataProvider = "sessionZonesDataProvider")
-    public void testDate(ZoneId sessionZone)
+    @Test
+    public void testDate()
+    {
+        testDate(UTC);
+        testDate(ZoneId.systemDefault());
+        // no DST in 1970, but has DST in later years (e.g. 2018)
+        testDate(ZoneId.of("Europe/Vilnius"));
+        // minutes offset change since 1970-01-01, no DST
+        testDate(ZoneId.of("Asia/Kathmandu"));
+        testDate(TestingSession.DEFAULT_TIME_ZONE_KEY.getZoneId());
+    }
+
+    private void testDate(ZoneId sessionZone)
     {
         Session session = Session.builder(getSession())
                 .setTimeZoneKey(TimeZoneKey.getTimeZoneKey(sessionZone.getId()))
@@ -576,8 +595,19 @@ public class TestMySqlTypeMapping
                 .execute(getQueryRunner(), session, trinoCreateAndInsert("test_date"));
     }
 
-    @Test(dataProvider = "sessionZonesDataProvider")
-    public void testTimeFromMySql(ZoneId sessionZone)
+    @Test
+    public void testTimeFromMySql()
+    {
+        testTimeFromMySql(UTC);
+        testTimeFromMySql(ZoneId.systemDefault());
+        // no DST in 1970, but has DST in later years (e.g. 2018)
+        testTimeFromMySql(ZoneId.of("Europe/Vilnius"));
+        // minutes offset change since 1970-01-01, no DST
+        testTimeFromMySql(ZoneId.of("Asia/Kathmandu"));
+        testTimeFromMySql(TestingSession.DEFAULT_TIME_ZONE_KEY.getZoneId());
+    }
+
+    private void testTimeFromMySql(ZoneId sessionZone)
     {
         Session session = Session.builder(getSession())
                 .setTimeZoneKey(TimeZoneKey.getTimeZoneKey(sessionZone.getId()))
@@ -601,8 +631,19 @@ public class TestMySqlTypeMapping
                 .execute(getQueryRunner(), session, mysqlCreateAndInsert("tpch.test_time"));
     }
 
-    @Test(dataProvider = "sessionZonesDataProvider")
-    public void testTimeFromTrino(ZoneId sessionZone)
+    @Test
+    public void testTimeFromTrino()
+    {
+        testTimeFromTrino(UTC);
+        testTimeFromTrino(ZoneId.systemDefault());
+        // no DST in 1970, but has DST in later years (e.g. 2018)
+        testTimeFromTrino(ZoneId.of("Europe/Vilnius"));
+        // minutes offset change since 1970-01-01, no DST
+        testTimeFromTrino(ZoneId.of("Asia/Kathmandu"));
+        testTimeFromTrino(TestingSession.DEFAULT_TIME_ZONE_KEY.getZoneId());
+    }
+
+    private void testTimeFromTrino(ZoneId sessionZone)
     {
         Session session = Session.builder(getSession())
                 .setTimeZoneKey(TimeZoneKey.getTimeZoneKey(sessionZone.getId()))
@@ -694,10 +735,21 @@ public class TestMySqlTypeMapping
     }
 
     /**
-     * Read {@code DATATIME}s inserted by MySQL as Trino {@code TIMESTAMP}s
+     * Read {@code DATETIME}s inserted by MySQL as Trino {@code TIMESTAMP}s
      */
-    @Test(dataProvider = "sessionZonesDataProvider")
-    public void testMySqlDatetimeType(ZoneId sessionZone)
+    @Test
+    public void testMySqlDatetimeType()
+    {
+        testMySqlDatetimeType(UTC);
+        testMySqlDatetimeType(ZoneId.systemDefault());
+        // no DST in 1970, but has DST in later years (e.g. 2018)
+        testMySqlDatetimeType(ZoneId.of("Europe/Vilnius"));
+        // minutes offset change since 1970-01-01, no DST
+        testMySqlDatetimeType(ZoneId.of("Asia/Kathmandu"));
+        testMySqlDatetimeType(TestingSession.DEFAULT_TIME_ZONE_KEY.getZoneId());
+    }
+
+    private void testMySqlDatetimeType(ZoneId sessionZone)
     {
         Session session = Session.builder(getSession())
                 .setTimeZoneKey(TimeZoneKey.getTimeZoneKey(sessionZone.getId()))
@@ -759,10 +811,21 @@ public class TestMySqlTypeMapping
     }
 
     /**
-     * Read {@code TIMESTAMP}s inserted by MySQL as Trino {@code TIMESTAMP}s
+     * Read {@code TIMESTAMP}s inserted by MySQL as Trino {@code TIMESTAMP WITH TIME ZONE}s
      */
-    @Test(dataProvider = "sessionZonesDataProvider")
-    public void testTimestampFromMySql(ZoneId sessionZone)
+    @Test
+    public void testTimestampFromMySql()
+    {
+        testTimestampFromMySql(UTC);
+        testTimestampFromMySql(ZoneId.systemDefault());
+        // no DST in 1970, but has DST in later years (e.g. 2018)
+        testTimestampFromMySql(ZoneId.of("Europe/Vilnius"));
+        // minutes offset change since 1970-01-01, no DST
+        testTimestampFromMySql(ZoneId.of("Asia/Kathmandu"));
+        testTimestampFromMySql(TestingSession.DEFAULT_TIME_ZONE_KEY.getZoneId());
+    }
+
+    private void testTimestampFromMySql(ZoneId sessionZone)
     {
         Session session = Session.builder(getSession())
                 .setTimeZoneKey(TimeZoneKey.getTimeZoneKey(sessionZone.getId()))
@@ -771,47 +834,58 @@ public class TestMySqlTypeMapping
         // Same as above but with inserts from MySQL - i.e. read path
         SqlDataTypeTest.create()
                 // after epoch (MySQL's timestamp type doesn't support values <= epoch)
-                .addRoundTrip("timestamp(3)", "TIMESTAMP '2019-03-18 10:01:17.987'", createTimestampType(3), "TIMESTAMP '2019-03-18 10:01:17.987'")
+                .addRoundTrip("timestamp(3)", "TIMESTAMP '2019-03-18 10:01:17.987'", createTimestampWithTimeZoneType(3), "TIMESTAMP '2019-03-18 10:01:17.987 UTC'")
                 // time doubled in JVM zone
-                .addRoundTrip("timestamp(3)", "TIMESTAMP '2018-10-28 01:33:17.456'", createTimestampType(3), "TIMESTAMP '2018-10-28 01:33:17.456'")
+                .addRoundTrip("timestamp(3)", "TIMESTAMP '2018-10-28 01:33:17.456'", createTimestampWithTimeZoneType(3), "TIMESTAMP '2018-10-28 01:33:17.456 UTC'")
                 // time double in Vilnius
-                .addRoundTrip("timestamp(3)", "TIMESTAMP '2018-10-28 03:33:33.333'", createTimestampType(3), "TIMESTAMP '2018-10-28 03:33:33.333'")
-                .addRoundTrip("timestamp(3)", "TIMESTAMP '1970-01-01 00:13:42.000'", createTimestampType(3), "TIMESTAMP '1970-01-01 00:13:42.000'")
-                .addRoundTrip("timestamp(3)", "TIMESTAMP '2018-04-01 02:13:55.123'", createTimestampType(3), "TIMESTAMP '2018-04-01 02:13:55.123'")
+                .addRoundTrip("timestamp(3)", "TIMESTAMP '2018-10-28 03:33:33.333'", createTimestampWithTimeZoneType(3), "TIMESTAMP '2018-10-28 03:33:33.333 UTC'")
+                .addRoundTrip("timestamp(3)", "TIMESTAMP '1970-01-01 00:13:42.000'", createTimestampWithTimeZoneType(3), "TIMESTAMP '1970-01-01 00:13:42.000 UTC'")
+                .addRoundTrip("timestamp(3)", "TIMESTAMP '2018-04-01 02:13:55.123'", createTimestampWithTimeZoneType(3), "TIMESTAMP '2018-04-01 02:13:55.123 UTC'")
                 // time gap in Vilnius
-                .addRoundTrip("timestamp(3)", "TIMESTAMP '2018-03-25 03:17:17.000'", createTimestampType(3), "TIMESTAMP '2018-03-25 03:17:17.000'")
+                .addRoundTrip("timestamp(3)", "TIMESTAMP '2018-03-25 03:17:17.000'", createTimestampWithTimeZoneType(3), "TIMESTAMP '2018-03-25 03:17:17.000 UTC'")
                 // time gap in Kathmandu
-                .addRoundTrip("timestamp(3)", "TIMESTAMP '1986-01-01 00:13:07.000'", createTimestampType(3), "TIMESTAMP '1986-01-01 00:13:07.000'")
+                .addRoundTrip("timestamp(3)", "TIMESTAMP '1986-01-01 00:13:07.000'", createTimestampWithTimeZoneType(3), "TIMESTAMP '1986-01-01 00:13:07.000 UTC'")
 
                 // same as above but with higher precision
-                .addRoundTrip("timestamp(6)", "TIMESTAMP '2019-03-18 10:01:17.987654'", createTimestampType(6), "TIMESTAMP '2019-03-18 10:01:17.987654'")
-                .addRoundTrip("timestamp(6)", "TIMESTAMP '2018-10-28 01:33:17.456789'", createTimestampType(6), "TIMESTAMP '2018-10-28 01:33:17.456789'")
-                .addRoundTrip("timestamp(6)", "TIMESTAMP '2018-10-28 03:33:33.333333'", createTimestampType(6), "TIMESTAMP '2018-10-28 03:33:33.333333'")
-                .addRoundTrip("timestamp(6)", "TIMESTAMP '1970-01-01 00:13:42.000000'", createTimestampType(6), "TIMESTAMP '1970-01-01 00:13:42.000000'")
-                .addRoundTrip("timestamp(6)", "TIMESTAMP '2018-04-01 02:13:55.123456'", createTimestampType(6), "TIMESTAMP '2018-04-01 02:13:55.123456'")
-                .addRoundTrip("timestamp(6)", "TIMESTAMP '2018-03-25 03:17:17.000000'", createTimestampType(6), "TIMESTAMP '2018-03-25 03:17:17.000000'")
-                .addRoundTrip("timestamp(6)", "TIMESTAMP '1986-01-01 00:13:07.000000'", createTimestampType(6), "TIMESTAMP '1986-01-01 00:13:07.000000'")
+                .addRoundTrip("timestamp(6)", "TIMESTAMP '2019-03-18 10:01:17.987654'", createTimestampWithTimeZoneType(6), "TIMESTAMP '2019-03-18 10:01:17.987654 UTC'")
+                .addRoundTrip("timestamp(6)", "TIMESTAMP '2018-10-28 01:33:17.456789'", createTimestampWithTimeZoneType(6), "TIMESTAMP '2018-10-28 01:33:17.456789 UTC'")
+                .addRoundTrip("timestamp(6)", "TIMESTAMP '2018-10-28 03:33:33.333333'", createTimestampWithTimeZoneType(6), "TIMESTAMP '2018-10-28 03:33:33.333333 UTC'")
+                .addRoundTrip("timestamp(6)", "TIMESTAMP '1970-01-01 00:13:42.000000'", createTimestampWithTimeZoneType(6), "TIMESTAMP '1970-01-01 00:13:42.000000 UTC'")
+                .addRoundTrip("timestamp(6)", "TIMESTAMP '2018-04-01 02:13:55.123456'", createTimestampWithTimeZoneType(6), "TIMESTAMP '2018-04-01 02:13:55.123456 UTC'")
+                .addRoundTrip("timestamp(6)", "TIMESTAMP '2018-03-25 03:17:17.000000'", createTimestampWithTimeZoneType(6), "TIMESTAMP '2018-03-25 03:17:17.000000 UTC'")
+                .addRoundTrip("timestamp(6)", "TIMESTAMP '1986-01-01 00:13:07.000000'", createTimestampWithTimeZoneType(6), "TIMESTAMP '1986-01-01 00:13:07.000000 UTC'")
 
                 // test arbitrary time for all supported precisions
-                .addRoundTrip("timestamp(0)", "TIMESTAMP '1970-01-01 00:00:01'", createTimestampType(0), "TIMESTAMP '1970-01-01 00:00:01'")
-                .addRoundTrip("timestamp(1)", "TIMESTAMP '1970-01-01 00:00:01.1'", createTimestampType(1), "TIMESTAMP '1970-01-01 00:00:01.1'")
-                .addRoundTrip("timestamp(1)", "TIMESTAMP '1970-01-01 00:00:01.9'", createTimestampType(1), "TIMESTAMP '1970-01-01 00:00:01.9'")
-                .addRoundTrip("timestamp(2)", "TIMESTAMP '1970-01-01 00:00:01.12'", createTimestampType(2), "TIMESTAMP '1970-01-01 00:00:01.12'")
-                .addRoundTrip("timestamp(3)", "TIMESTAMP '1970-01-01 00:00:01.123'", createTimestampType(3), "TIMESTAMP '1970-01-01 00:00:01.123'")
-                .addRoundTrip("timestamp(3)", "TIMESTAMP '1970-01-01 00:00:01.999'", createTimestampType(3), "TIMESTAMP '1970-01-01 00:00:01.999'")
-                .addRoundTrip("timestamp(4)", "TIMESTAMP '1970-01-01 00:00:01.1234'", createTimestampType(4), "TIMESTAMP '1970-01-01 00:00:01.1234'")
-                .addRoundTrip("timestamp(5)", "TIMESTAMP '1970-01-01 00:00:01.12345'", createTimestampType(5), "TIMESTAMP '1970-01-01 00:00:01.12345'")
-                .addRoundTrip("timestamp(1)", "TIMESTAMP '2020-09-27 12:34:56.1'", createTimestampType(1), "TIMESTAMP '2020-09-27 12:34:56.1'")
-                .addRoundTrip("timestamp(1)", "TIMESTAMP '2020-09-27 12:34:56.9'", createTimestampType(1), "TIMESTAMP '2020-09-27 12:34:56.9'")
-                .addRoundTrip("timestamp(3)", "TIMESTAMP '2020-09-27 12:34:56.123'", createTimestampType(3), "TIMESTAMP '2020-09-27 12:34:56.123'")
-                .addRoundTrip("timestamp(3)", "TIMESTAMP '2020-09-27 12:34:56.999'", createTimestampType(3), "TIMESTAMP '2020-09-27 12:34:56.999'")
-                .addRoundTrip("timestamp(6)", "TIMESTAMP '2020-09-27 12:34:56.123456'", createTimestampType(6), "TIMESTAMP '2020-09-27 12:34:56.123456'")
+                .addRoundTrip("timestamp(0)", "TIMESTAMP '1970-01-01 00:00:01'", createTimestampWithTimeZoneType(0), "TIMESTAMP '1970-01-01 00:00:01 UTC'")
+                .addRoundTrip("timestamp(1)", "TIMESTAMP '1970-01-01 00:00:01.1'", createTimestampWithTimeZoneType(1), "TIMESTAMP '1970-01-01 00:00:01.1 UTC'")
+                .addRoundTrip("timestamp(1)", "TIMESTAMP '1970-01-01 00:00:01.9'", createTimestampWithTimeZoneType(1), "TIMESTAMP '1970-01-01 00:00:01.9 UTC'")
+                .addRoundTrip("timestamp(2)", "TIMESTAMP '1970-01-01 00:00:01.12'", createTimestampWithTimeZoneType(2), "TIMESTAMP '1970-01-01 00:00:01.12 UTC'")
+                .addRoundTrip("timestamp(3)", "TIMESTAMP '1970-01-01 00:00:01.123'", createTimestampWithTimeZoneType(3), "TIMESTAMP '1970-01-01 00:00:01.123 UTC'")
+                .addRoundTrip("timestamp(3)", "TIMESTAMP '1970-01-01 00:00:01.999'", createTimestampWithTimeZoneType(3), "TIMESTAMP '1970-01-01 00:00:01.999 UTC'")
+                .addRoundTrip("timestamp(4)", "TIMESTAMP '1970-01-01 00:00:01.1234'", createTimestampWithTimeZoneType(4), "TIMESTAMP '1970-01-01 00:00:01.1234 UTC'")
+                .addRoundTrip("timestamp(5)", "TIMESTAMP '1970-01-01 00:00:01.12345'", createTimestampWithTimeZoneType(5), "TIMESTAMP '1970-01-01 00:00:01.12345 UTC'")
+                .addRoundTrip("timestamp(1)", "TIMESTAMP '2020-09-27 12:34:56.1'", createTimestampWithTimeZoneType(1), "TIMESTAMP '2020-09-27 12:34:56.1 UTC'")
+                .addRoundTrip("timestamp(1)", "TIMESTAMP '2020-09-27 12:34:56.9'", createTimestampWithTimeZoneType(1), "TIMESTAMP '2020-09-27 12:34:56.9 UTC'")
+                .addRoundTrip("timestamp(3)", "TIMESTAMP '2020-09-27 12:34:56.123'", createTimestampWithTimeZoneType(3), "TIMESTAMP '2020-09-27 12:34:56.123 UTC'")
+                .addRoundTrip("timestamp(3)", "TIMESTAMP '2020-09-27 12:34:56.999'", createTimestampWithTimeZoneType(3), "TIMESTAMP '2020-09-27 12:34:56.999 UTC'")
+                .addRoundTrip("timestamp(6)", "TIMESTAMP '2020-09-27 12:34:56.123456'", createTimestampWithTimeZoneType(6), "TIMESTAMP '2020-09-27 12:34:56.123456 UTC'")
 
                 .execute(getQueryRunner(), session, mysqlCreateAndInsert("tpch.test_timestamp"));
     }
 
-    @Test(dataProvider = "sessionZonesDataProvider")
-    public void testTimestampFromTrino(ZoneId sessionZone)
+    @Test
+    public void testTimestampFromTrino()
+    {
+        testTimestampFromTrino(UTC);
+        testTimestampFromTrino(ZoneId.systemDefault());
+        // no DST in 1970, but has DST in later years (e.g. 2018)
+        testTimestampFromTrino(ZoneId.of("Europe/Vilnius"));
+        // minutes offset change since 1970-01-01, no DST
+        testTimestampFromTrino(ZoneId.of("Asia/Kathmandu"));
+        testTimestampFromTrino(TestingSession.DEFAULT_TIME_ZONE_KEY.getZoneId());
+    }
+
+    private void testTimestampFromTrino(ZoneId sessionZone)
     {
         Session session = Session.builder(getSession())
                 .setTimeZoneKey(TimeZoneKey.getTimeZoneKey(sessionZone.getId()))
@@ -916,18 +990,214 @@ public class TestMySqlTypeMapping
                 .execute(getQueryRunner(), trinoCreateAndInsert("test_timestamp_coercion"));
     }
 
-    @DataProvider
-    public Object[][] sessionZonesDataProvider()
+    @Test
+    public void testTimestampWithTimeZoneFromTrinoUtc()
     {
-        return new Object[][] {
-                {UTC},
-                {ZoneId.systemDefault()},
-                // no DST in 1970, but has DST in later years (e.g. 2018)
-                {ZoneId.of("Europe/Vilnius")},
-                // minutes offset change since 1970-01-01, no DST
-                {ZoneId.of("Asia/Kathmandu")},
-                {TestingSession.DEFAULT_TIME_ZONE_KEY.getZoneId()},
-        };
+        ZoneId sessionZone = UTC;
+        Session session = Session.builder(getSession())
+                .setTimeZoneKey(TimeZoneKey.getTimeZoneKey(sessionZone.getId()))
+                .build();
+
+        SqlDataTypeTest.create()
+                // after epoch (MySQL's timestamp type doesn't support values <= epoch)
+                .addRoundTrip("timestamp(3) WITH TIME ZONE", "TIMESTAMP '2019-03-18 10:01:17.987 %s'".formatted(sessionZone), createTimestampWithTimeZoneType(3), "TIMESTAMP '2019-03-18 10:01:17.987 UTC'")
+                // time doubled in JVM zone
+                .addRoundTrip("timestamp(3) WITH TIME ZONE", "TIMESTAMP '2018-10-28 01:33:17.456 %s'".formatted(sessionZone), createTimestampWithTimeZoneType(3), "TIMESTAMP '2018-10-28 01:33:17.456 UTC'")
+                // time double in Vilnius
+                .addRoundTrip("timestamp(3) WITH TIME ZONE", "TIMESTAMP '2018-10-28 03:33:33.333 %s'".formatted(sessionZone), createTimestampWithTimeZoneType(3), "TIMESTAMP '2018-10-28 03:33:33.333 UTC'")
+                .addRoundTrip("timestamp(3) WITH TIME ZONE", "TIMESTAMP '1970-01-01 00:13:42.000 %s'".formatted(sessionZone), createTimestampWithTimeZoneType(3), "TIMESTAMP '1970-01-01 00:13:42.000 UTC'")
+                .addRoundTrip("timestamp(3) WITH TIME ZONE", "TIMESTAMP '2018-04-01 02:13:55.123 %s'".formatted(sessionZone), createTimestampWithTimeZoneType(3), "TIMESTAMP '2018-04-01 02:13:55.123 UTC'")
+                // time gap in Vilnius
+                .addRoundTrip("timestamp(3) WITH TIME ZONE", "TIMESTAMP '2018-03-25 03:17:17.000 %s'".formatted(sessionZone), createTimestampWithTimeZoneType(3), "TIMESTAMP '2018-03-25 03:17:17.000 UTC'")
+                // time gap in Kathmandu
+                .addRoundTrip("timestamp(3) WITH TIME ZONE", "TIMESTAMP '1986-01-01 00:13:07.000 %s'".formatted(sessionZone), createTimestampWithTimeZoneType(3), "TIMESTAMP '1986-01-01 00:13:07.000 UTC'")
+
+                // same as above but with higher precision
+                .addRoundTrip("timestamp(6) WITH TIME ZONE", "TIMESTAMP '2019-03-18 10:01:17.987654 %s'".formatted(sessionZone), createTimestampWithTimeZoneType(6), "TIMESTAMP '2019-03-18 10:01:17.987654 UTC'")
+                .addRoundTrip("timestamp(6) WITH TIME ZONE", "TIMESTAMP '2018-10-28 01:33:17.456789 %s'".formatted(sessionZone), createTimestampWithTimeZoneType(6), "TIMESTAMP '2018-10-28 01:33:17.456789 UTC'")
+                .addRoundTrip("timestamp(6) WITH TIME ZONE", "TIMESTAMP '2018-10-28 03:33:33.333333 %s'".formatted(sessionZone), createTimestampWithTimeZoneType(6), "TIMESTAMP '2018-10-28 03:33:33.333333 UTC'")
+                .addRoundTrip("timestamp(6) WITH TIME ZONE", "TIMESTAMP '1970-01-01 00:13:42.000000 %s'".formatted(sessionZone), createTimestampWithTimeZoneType(6), "TIMESTAMP '1970-01-01 00:13:42.000000 UTC'")
+                .addRoundTrip("timestamp(6) WITH TIME ZONE", "TIMESTAMP '2018-04-01 02:13:55.123456 %s'".formatted(sessionZone), createTimestampWithTimeZoneType(6), "TIMESTAMP '2018-04-01 02:13:55.123456 UTC'")
+                .addRoundTrip("timestamp(6) WITH TIME ZONE", "TIMESTAMP '2018-03-25 03:17:17.000000 %s'".formatted(sessionZone), createTimestampWithTimeZoneType(6), "TIMESTAMP '2018-03-25 03:17:17.000000 UTC'")
+                .addRoundTrip("timestamp(6) WITH TIME ZONE", "TIMESTAMP '1986-01-01 00:13:07.000000 %s'".formatted(sessionZone), createTimestampWithTimeZoneType(6), "TIMESTAMP '1986-01-01 00:13:07.000000 UTC'")
+
+                // test arbitrary time for all supported precisions
+                .addRoundTrip("timestamp(0) WITH TIME ZONE", "TIMESTAMP '1970-01-01 00:00:01 %s'".formatted(sessionZone), createTimestampWithTimeZoneType(0), "TIMESTAMP '1970-01-01 00:00:01 UTC'")
+                .addRoundTrip("timestamp(1) WITH TIME ZONE", "TIMESTAMP '1970-01-01 00:00:01.1 %s'".formatted(sessionZone), createTimestampWithTimeZoneType(1), "TIMESTAMP '1970-01-01 00:00:01.1 UTC'")
+                .addRoundTrip("timestamp(1) WITH TIME ZONE", "TIMESTAMP '1970-01-01 00:00:01.9 %s'".formatted(sessionZone), createTimestampWithTimeZoneType(1), "TIMESTAMP '1970-01-01 00:00:01.9 UTC'")
+                .addRoundTrip("timestamp(2) WITH TIME ZONE", "TIMESTAMP '1970-01-01 00:00:01.12 %s'".formatted(sessionZone), createTimestampWithTimeZoneType(2), "TIMESTAMP '1970-01-01 00:00:01.12 UTC'")
+                .addRoundTrip("timestamp(3) WITH TIME ZONE", "TIMESTAMP '1970-01-01 00:00:01.123 %s'".formatted(sessionZone), createTimestampWithTimeZoneType(3), "TIMESTAMP '1970-01-01 00:00:01.123 UTC'")
+                .addRoundTrip("timestamp(3) WITH TIME ZONE", "TIMESTAMP '1970-01-01 00:00:01.999 %s'".formatted(sessionZone), createTimestampWithTimeZoneType(3), "TIMESTAMP '1970-01-01 00:00:01.999 UTC'")
+                .addRoundTrip("timestamp(4) WITH TIME ZONE", "TIMESTAMP '1970-01-01 00:00:01.1234 %s'".formatted(sessionZone), createTimestampWithTimeZoneType(4), "TIMESTAMP '1970-01-01 00:00:01.1234 UTC'")
+                .addRoundTrip("timestamp(5) WITH TIME ZONE", "TIMESTAMP '1970-01-01 00:00:01.12345 %s'".formatted(sessionZone), createTimestampWithTimeZoneType(5), "TIMESTAMP '1970-01-01 00:00:01.12345 UTC'")
+                .addRoundTrip("timestamp(1) WITH TIME ZONE", "TIMESTAMP '2020-09-27 12:34:56.1 %s'".formatted(sessionZone), createTimestampWithTimeZoneType(1), "TIMESTAMP '2020-09-27 12:34:56.1 UTC'")
+                .addRoundTrip("timestamp(1) WITH TIME ZONE", "TIMESTAMP '2020-09-27 12:34:56.9 %s'".formatted(sessionZone), createTimestampWithTimeZoneType(1), "TIMESTAMP '2020-09-27 12:34:56.9 UTC'")
+                .addRoundTrip("timestamp(3) WITH TIME ZONE", "TIMESTAMP '2020-09-27 12:34:56.123 %s'".formatted(sessionZone), createTimestampWithTimeZoneType(3), "TIMESTAMP '2020-09-27 12:34:56.123 UTC'")
+                .addRoundTrip("timestamp(3) WITH TIME ZONE", "TIMESTAMP '2020-09-27 12:34:56.999 %s'".formatted(sessionZone), createTimestampWithTimeZoneType(3), "TIMESTAMP '2020-09-27 12:34:56.999 UTC'")
+                .addRoundTrip("timestamp(6) WITH TIME ZONE", "TIMESTAMP '2020-09-27 12:34:56.123456 %s'".formatted(sessionZone), createTimestampWithTimeZoneType(6), "TIMESTAMP '2020-09-27 12:34:56.123456 UTC'")
+
+                .execute(getQueryRunner(), session, trinoCreateAsSelect(session, "test_timestamp_with_time_zone"))
+                .execute(getQueryRunner(), session, trinoCreateAsSelect("test_timestamp_with_time_zone"))
+                .execute(getQueryRunner(), session, trinoCreateAndInsert(session, "test_timestamp_with_time_zone"))
+                .execute(getQueryRunner(), session, trinoCreateAndInsert("test_timestamp_with_time_zone"));
+    }
+
+    @Test
+    public void testTimestampWithTimeZoneFromTrinoDefaultTimeZone()
+    {
+        // Same as above, but insert time zone is default and read time zone is UTC
+        ZoneId sessionZone = TestingSession.DEFAULT_TIME_ZONE_KEY.getZoneId();
+        Session session = Session.builder(getSession())
+                .setTimeZoneKey(TimeZoneKey.getTimeZoneKey(sessionZone.getId()))
+                .build();
+
+        SqlDataTypeTest.create()
+                // after epoch (MySQL's timestamp type doesn't support values <= epoch)
+                .addRoundTrip("timestamp(3) WITH TIME ZONE", "TIMESTAMP '2019-03-18 10:01:17.987 %s'".formatted(sessionZone), createTimestampWithTimeZoneType(3), "TIMESTAMP '2019-03-17 20:01:17.987 UTC'")
+                // time doubled in JVM zone
+                .addRoundTrip("timestamp(3) WITH TIME ZONE", "TIMESTAMP '2018-10-28 01:33:17.456 %s'".formatted(sessionZone), createTimestampWithTimeZoneType(3), "TIMESTAMP '2018-10-27 11:33:17.456 UTC'")
+                .addRoundTrip("timestamp(3) WITH TIME ZONE", "TIMESTAMP '2018-10-28 03:33:33.333 %s'".formatted(sessionZone), createTimestampWithTimeZoneType(3), "TIMESTAMP '2018-10-27 13:33:33.333 UTC'")
+                .addRoundTrip("timestamp(3) WITH TIME ZONE", "TIMESTAMP '1970-01-01 00:13:42.000 %s'".formatted(sessionZone), createTimestampWithTimeZoneType(3), "TIMESTAMP '1970-01-01 11:13:42.000 UTC'")
+                .addRoundTrip("timestamp(3) WITH TIME ZONE", "TIMESTAMP '2018-04-01 02:13:55.123 %s'".formatted(sessionZone), createTimestampWithTimeZoneType(3), "TIMESTAMP '2018-03-31 12:13:55.123 UTC'")
+                // time gap in Vilnius
+                .addRoundTrip("timestamp(3) WITH TIME ZONE", "TIMESTAMP '2018-03-25 03:17:17.000 %s'".formatted(sessionZone), createTimestampWithTimeZoneType(3), "TIMESTAMP '2018-03-24 13:17:17.000 UTC'")
+                // time gap in Kathmandu
+                .addRoundTrip("timestamp(3) WITH TIME ZONE", "TIMESTAMP '1986-01-01 00:13:07.000 %s'".formatted(sessionZone), createTimestampWithTimeZoneType(3), "TIMESTAMP '1986-01-01 11:13:07.000 UTC'")
+
+                // same as above but with higher precision
+                .addRoundTrip("timestamp(6) WITH TIME ZONE", "TIMESTAMP '2019-03-18 10:01:17.987654 %s'".formatted(sessionZone), createTimestampWithTimeZoneType(6), "TIMESTAMP '2019-03-17 20:01:17.987654 UTC'")
+                .addRoundTrip("timestamp(6) WITH TIME ZONE", "TIMESTAMP '2018-10-28 01:33:17.456789 %s'".formatted(sessionZone), createTimestampWithTimeZoneType(6), "TIMESTAMP '2018-10-27 11:33:17.456789 UTC'")
+                .addRoundTrip("timestamp(6) WITH TIME ZONE", "TIMESTAMP '2018-10-28 03:33:33.333333 %s'".formatted(sessionZone), createTimestampWithTimeZoneType(6), "TIMESTAMP '2018-10-27 13:33:33.333333 UTC'")
+                .addRoundTrip("timestamp(6) WITH TIME ZONE", "TIMESTAMP '1970-01-01 00:13:42.000000 %s'".formatted(sessionZone), createTimestampWithTimeZoneType(6), "TIMESTAMP '1970-01-01 11:13:42.000000 UTC'")
+                .addRoundTrip("timestamp(6) WITH TIME ZONE", "TIMESTAMP '2018-04-01 02:13:55.123456 %s'".formatted(sessionZone), createTimestampWithTimeZoneType(6), "TIMESTAMP '2018-03-31 12:13:55.123456 UTC'")
+                .addRoundTrip("timestamp(6) WITH TIME ZONE", "TIMESTAMP '2018-03-25 03:17:17.000000 %s'".formatted(sessionZone), createTimestampWithTimeZoneType(6), "TIMESTAMP '2018-03-24 13:17:17.000000 UTC'")
+                .addRoundTrip("timestamp(6) WITH TIME ZONE", "TIMESTAMP '1986-01-01 00:13:07.000000 %s'".formatted(sessionZone), createTimestampWithTimeZoneType(6), "TIMESTAMP '1986-01-01 11:13:07.000000 UTC'")
+
+                // test arbitrary time for all supported precisions
+                .addRoundTrip("timestamp(0) WITH TIME ZONE", "TIMESTAMP '1970-01-01 00:00:01 %s'".formatted(sessionZone), createTimestampWithTimeZoneType(0), "TIMESTAMP '1970-01-01 11:00:01 UTC'")
+                .addRoundTrip("timestamp(1) WITH TIME ZONE", "TIMESTAMP '1970-01-01 00:00:01.1 %s'".formatted(sessionZone), createTimestampWithTimeZoneType(1), "TIMESTAMP '1970-01-01 11:00:01.1 UTC'")
+                .addRoundTrip("timestamp(1) WITH TIME ZONE", "TIMESTAMP '1970-01-01 00:00:01.9 %s'".formatted(sessionZone), createTimestampWithTimeZoneType(1), "TIMESTAMP '1970-01-01 11:00:01.9 UTC'")
+                .addRoundTrip("timestamp(2) WITH TIME ZONE", "TIMESTAMP '1970-01-01 00:00:01.12 %s'".formatted(sessionZone), createTimestampWithTimeZoneType(2), "TIMESTAMP '1970-01-01 11:00:01.12 UTC'")
+                .addRoundTrip("timestamp(3) WITH TIME ZONE", "TIMESTAMP '1970-01-01 00:00:01.123 %s'".formatted(sessionZone), createTimestampWithTimeZoneType(3), "TIMESTAMP '1970-01-01 11:00:01.123 UTC'")
+                .addRoundTrip("timestamp(3) WITH TIME ZONE", "TIMESTAMP '1970-01-01 00:00:01.999 %s'".formatted(sessionZone), createTimestampWithTimeZoneType(3), "TIMESTAMP '1970-01-01 11:00:01.999 UTC'")
+                .addRoundTrip("timestamp(4) WITH TIME ZONE", "TIMESTAMP '1970-01-01 00:00:01.1234 %s'".formatted(sessionZone), createTimestampWithTimeZoneType(4), "TIMESTAMP '1970-01-01 11:00:01.1234 UTC'")
+                .addRoundTrip("timestamp(5) WITH TIME ZONE", "TIMESTAMP '1970-01-01 00:00:01.12345 %s'".formatted(sessionZone), createTimestampWithTimeZoneType(5), "TIMESTAMP '1970-01-01 11:00:01.12345 UTC'")
+                .addRoundTrip("timestamp(1) WITH TIME ZONE", "TIMESTAMP '2020-09-27 12:34:56.1 %s'".formatted(sessionZone), createTimestampWithTimeZoneType(1), "TIMESTAMP '2020-09-26 22:34:56.1 UTC'")
+                .addRoundTrip("timestamp(1) WITH TIME ZONE", "TIMESTAMP '2020-09-27 12:34:56.9 %s'".formatted(sessionZone), createTimestampWithTimeZoneType(1), "TIMESTAMP '2020-09-26 22:34:56.9 UTC'")
+                .addRoundTrip("timestamp(3) WITH TIME ZONE", "TIMESTAMP '2020-09-27 12:34:56.123 %s'".formatted(sessionZone), createTimestampWithTimeZoneType(3), "TIMESTAMP '2020-09-26 22:34:56.123 UTC'")
+                .addRoundTrip("timestamp(3) WITH TIME ZONE", "TIMESTAMP '2020-09-27 12:34:56.999 %s'".formatted(sessionZone), createTimestampWithTimeZoneType(3), "TIMESTAMP '2020-09-26 22:34:56.999 UTC'")
+                .addRoundTrip("timestamp(6) WITH TIME ZONE", "TIMESTAMP '2020-09-27 12:34:56.123456 %s'".formatted(sessionZone), createTimestampWithTimeZoneType(6), "TIMESTAMP '2020-09-26 22:34:56.123456 UTC'")
+
+                .execute(getQueryRunner(), session, trinoCreateAsSelect(session, "test_timestamp_with_time_zone"))
+                .execute(getQueryRunner(), session, trinoCreateAsSelect("test_timestamp_with_time_zone"))
+                .execute(getQueryRunner(), session, trinoCreateAndInsert(session, "test_timestamp_with_time_zone"))
+                .execute(getQueryRunner(), session, trinoCreateAndInsert("test_timestamp_with_time_zone"));
+    }
+
+    @Test
+    public void testUnsupportedTimestampWithTimeZoneValues()
+    {
+        // The range for TIMESTAMP values is '1970-01-01 00:00:01.000000' to '2038-01-19 03:14:07.499999'
+        try (TestTable table = new TestTable(mySqlServer::execute, "tpch.test_unsupported_timestamp", "(data TIMESTAMP)")) {
+            // Verify MySQL writes
+            assertMySqlQueryFails(
+                    "INSERT INTO " + table.getName() + " VALUES ('1970-01-01 00:00:00')",
+                    "Data truncation: Incorrect datetime value: '1970-01-01 00:00:00' for column 'data' at row 1");
+            assertMySqlQueryFails(
+                    "INSERT INTO " + table.getName() + " VALUES ('2038-01-19 03:14:08')",
+                    "Data truncation: Incorrect datetime value: '2038-01-19 03:14:08' for column 'data' at row 1");
+
+            // Verify Trino writes
+            assertQueryFails(
+                    "INSERT INTO " + table.getName() + " VALUES (TIMESTAMP '1932-04-01 00:00:00 UTC')", // min - 1
+                    "Failed to insert data: Data truncation: Incorrect datetime value: '1932-03-31 17:00:00' for column 'data' at row 1");
+            assertQueryFails(
+                    "INSERT INTO " + table.getName() + " VALUES (TIMESTAMP '2038-01-19 03:14:08 UTC')", // max + 1
+                    "Failed to insert data: Data truncation: Incorrect datetime value: '2038-01-18 21:14:08' for column 'data' at row 1");
+        }
+    }
+
+    /**
+     * Additional test supplementing {@link #testTimestampWithTimeZoneFromTrinoUtc()} with values that do not necessarily round-trip.
+     *
+     * @see #testTimestampWithTimeZoneFromTrinoUtc
+     */
+    @Test
+    public void testTimestampWithTimeZoneCoercion()
+    {
+        SqlDataTypeTest.create()
+                // precision 0 ends up as precision 0
+                .addRoundTrip("TIMESTAMP '1970-01-01 00:00:01 UTC'", "TIMESTAMP '1970-01-01 00:00:01 UTC'")
+
+                .addRoundTrip("TIMESTAMP '1970-01-01 00:00:01.1 UTC'", "TIMESTAMP '1970-01-01 00:00:01.1 UTC'")
+                .addRoundTrip("TIMESTAMP '1970-01-01 00:00:01.9 UTC'", "TIMESTAMP '1970-01-01 00:00:01.9 UTC'")
+                .addRoundTrip("TIMESTAMP '1970-01-01 00:00:01.123 UTC'", "TIMESTAMP '1970-01-01 00:00:01.123 UTC'")
+                .addRoundTrip("TIMESTAMP '1970-01-01 00:00:01.123000 UTC'", "TIMESTAMP '1970-01-01 00:00:01.123000 UTC'")
+                .addRoundTrip("TIMESTAMP '1970-01-01 00:00:01.999 UTC'", "TIMESTAMP '1970-01-01 00:00:01.999 UTC'")
+                // max supported precision
+                .addRoundTrip("TIMESTAMP '1970-01-01 00:00:01.123456 UTC'", "TIMESTAMP '1970-01-01 00:00:01.123456 UTC'")
+
+                .addRoundTrip("TIMESTAMP '2020-09-27 12:34:56.1 UTC'", "TIMESTAMP '2020-09-27 12:34:56.1 UTC'")
+                .addRoundTrip("TIMESTAMP '2020-09-27 12:34:56.9 UTC'", "TIMESTAMP '2020-09-27 12:34:56.9 UTC'")
+                .addRoundTrip("TIMESTAMP '2020-09-27 12:34:56.123 UTC'", "TIMESTAMP '2020-09-27 12:34:56.123 UTC'")
+                .addRoundTrip("TIMESTAMP '2020-09-27 12:34:56.123000 UTC'", "TIMESTAMP '2020-09-27 12:34:56.123000 UTC'")
+                .addRoundTrip("TIMESTAMP '2020-09-27 12:34:56.999 UTC'", "TIMESTAMP '2020-09-27 12:34:56.999 UTC'")
+                // max supported precision
+                .addRoundTrip("TIMESTAMP '2020-09-27 12:34:56.123456 UTC'", "TIMESTAMP '2020-09-27 12:34:56.123456 UTC'")
+
+                // round down
+                .addRoundTrip("TIMESTAMP '1970-01-01 00:00:01.1234561 UTC'", "TIMESTAMP '1970-01-01 00:00:01.123456 UTC'")
+
+                // nanoc round up, end result rounds down
+                .addRoundTrip("TIMESTAMP '1970-01-01 00:00:01.123456499 UTC'", "TIMESTAMP '1970-01-01 00:00:01.123456 UTC'")
+                .addRoundTrip("TIMESTAMP '1970-01-01 00:00:01.123456499999 UTC'", "TIMESTAMP '1970-01-01 00:00:01.123456 UTC'")
+
+                // round up
+                .addRoundTrip("TIMESTAMP '1970-01-01 00:00:01.1234565 UTC'", "TIMESTAMP '1970-01-01 00:00:01.123457 UTC'")
+
+                // max precision
+                .addRoundTrip("TIMESTAMP '1970-01-01 00:00:01.111222333444 UTC'", "TIMESTAMP '1970-01-01 00:00:01.111222 UTC'")
+
+                // round up to next second
+                .addRoundTrip("TIMESTAMP '1970-01-01 00:00:01.9999995 UTC'", "TIMESTAMP '1970-01-01 00:00:02.000000 UTC'")
+
+                // round up to next day
+                .addRoundTrip("TIMESTAMP '1970-01-01 23:59:59.9999995 UTC'", "TIMESTAMP '1970-01-02 00:00:00.000000 UTC'")
+
+                // negative epoch is not supported by MySQL TIMESTAMP
+
+                // CTAS with Trino, where the coercion is done by the connector
+                .execute(getQueryRunner(), trinoCreateAsSelect("test_timestamp_with_time_zone_coercion"))
+                // INSERT with Trino, where the coercion is done by the engine
+                .execute(getQueryRunner(), trinoCreateAndInsert("test_timestamp_with_time_zone_coercion"));
+    }
+
+    @Test
+    public void testZeroTimestamp()
+            throws Exception
+    {
+        String connectionUrl = mySqlServer.getJdbcUrl() + "&zeroDateTimeBehavior=convertToNull";
+
+        QueryRunner queryRunner = DistributedQueryRunner.builder(getSession()).build();
+        queryRunner.installPlugin(new MySqlPlugin());
+        Map<String, String> properties = ImmutableMap.<String, String>builder()
+                .put("connection-url", connectionUrl)
+                .put("connection-user", mySqlServer.getUsername())
+                .put("connection-password", mySqlServer.getPassword())
+                .buildOrThrow();
+        queryRunner.createCatalog("mysql", "mysql", properties);
+
+        try (Connection connection = DriverManager.getConnection(connectionUrl, mySqlServer.getUsername(), mySqlServer.getPassword());
+                Statement statement = connection.createStatement()) {
+            statement.execute("CREATE TABLE tpch.test_zero_ts(col_dt datetime, col_ts timestamp)");
+            statement.execute("SET sql_mode=''");
+            statement.execute("INSERT INTO tpch.test_zero_ts(col_dt, col_ts) VALUES ('0000-00-00 00:00:00', '0000-00-00 00:00:00')");
+
+            assertThat(queryRunner.execute("SELECT col_dt FROM test_zero_ts").getOnlyValue()).isNull();
+            assertThat(queryRunner.execute("SELECT col_ts FROM test_zero_ts").getOnlyValue()).isNull();
+
+            statement.execute("DROP TABLE tpch.test_zero_ts");
+        }
     }
 
     @Test
@@ -1074,7 +1344,7 @@ public class TestMySqlTypeMapping
     private void assertMySqlQueryFails(@Language("SQL") String sql, String expectedMessage)
     {
         assertThatThrownBy(() -> mySqlServer.execute(sql))
-                .getCause()
+                .cause()
                 .hasMessageContaining(expectedMessage);
     }
 }

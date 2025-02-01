@@ -15,10 +15,11 @@ package io.trino.operator;
 
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Suppliers;
-import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.util.concurrent.ListenableFuture;
 import com.google.common.util.concurrent.SettableFuture;
+import com.google.errorprone.annotations.ThreadSafe;
+import com.google.errorprone.annotations.concurrent.GuardedBy;
 import io.airlift.stats.CounterStat;
 import io.airlift.units.DataSize;
 import io.airlift.units.Duration;
@@ -28,18 +29,13 @@ import io.trino.memory.context.AggregatedMemoryContext;
 import io.trino.memory.context.LocalMemoryContext;
 import io.trino.memory.context.MemoryTrackingContext;
 import io.trino.operator.OperationTimer.OperationTiming;
-import io.trino.plugin.base.metrics.DurationTiming;
 import io.trino.plugin.base.metrics.TDigestHistogram;
 import io.trino.spi.Page;
 import io.trino.spi.TrinoException;
 import io.trino.spi.metrics.Metrics;
 import io.trino.sql.planner.plan.PlanNodeId;
+import jakarta.annotation.Nullable;
 
-import javax.annotation.Nullable;
-import javax.annotation.concurrent.GuardedBy;
-import javax.annotation.concurrent.ThreadSafe;
-
-import java.util.List;
 import java.util.Optional;
 import java.util.concurrent.Executor;
 import java.util.concurrent.atomic.AtomicLong;
@@ -62,8 +58,7 @@ import static java.util.concurrent.TimeUnit.SECONDS;
 /**
  * Contains information about {@link Operator} execution.
  * <p>
- * Not thread-safe. Only {@link #getNestedOperatorStats()}
- * and revocable-memory-related operations are thread-safe.
+ * Not thread-safe. Only revocable-memory-related operations are thread-safe.
  */
 public class OperatorContext
 {
@@ -92,6 +87,7 @@ public class OperatorContext
     private final AtomicReference<Metrics> metrics = new AtomicReference<>(Metrics.EMPTY);  // this is not incremental, but gets overwritten by the latest value.
     private final AtomicReference<Metrics> connectorMetrics = new AtomicReference<>(Metrics.EMPTY); // this is not incremental, but gets overwritten by the latest value.
 
+    private final AtomicLong writerInputDataSize = new AtomicLong();
     private final AtomicLong physicalWrittenDataSize = new AtomicLong();
 
     private final AtomicReference<SettableFuture<Void>> memoryFuture;
@@ -104,7 +100,6 @@ public class OperatorContext
 
     private final OperatorSpillContext spillContext;
     private final AtomicReference<Supplier<? extends OperatorInfo>> infoSupplier = new AtomicReference<>();
-    private final AtomicReference<Supplier<List<OperatorStats>>> nestedOperatorStatsSupplier = new AtomicReference<>();
 
     private final AtomicLong peakUserMemoryReservation = new AtomicLong();
     private final AtomicLong peakRevocableMemoryReservation = new AtomicLong();
@@ -162,11 +157,6 @@ public class OperatorContext
         return driverContext.getSession();
     }
 
-    public boolean isDone()
-    {
-        return driverContext.isDone();
-    }
-
     void recordAddInput(OperationTimer operationTimer, Page page)
     {
         operationTimer.recordOperationComplete(addInputTiming);
@@ -182,6 +172,9 @@ public class OperatorContext
      */
     public void recordPhysicalInputWithTiming(long sizeInBytes, long positions, long readNanos)
     {
+        checkArgument(sizeInBytes >= 0, "sizeInBytes is negative (%s)", sizeInBytes);
+        checkArgument(positions >= 0, "positions is negative (%s)", positions);
+        checkArgument(readNanos >= 0, "readNanos is negative (%s)", readNanos);
         physicalInputDataSize.update(sizeInBytes);
         physicalInputPositions.update(positions);
         physicalInputReadTimeNanos.getAndAdd(readNanos);
@@ -193,6 +186,8 @@ public class OperatorContext
      */
     public void recordNetworkInput(long sizeInBytes, long positions)
     {
+        checkArgument(sizeInBytes >= 0, "sizeInBytes is negative (%s)", sizeInBytes);
+        checkArgument(positions >= 0, "positions is negative (%s)", positions);
         internalNetworkInputDataSize.update(sizeInBytes);
         internalNetworkPositions.update(positions);
     }
@@ -203,6 +198,8 @@ public class OperatorContext
      */
     public void recordProcessedInput(long sizeInBytes, long positions)
     {
+        checkArgument(sizeInBytes >= 0, "sizeInBytes is negative (%s)", sizeInBytes);
+        checkArgument(positions >= 0, "positions is negative (%s)", positions);
         inputDataSize.update(sizeInBytes);
         inputPositions.update(positions);
     }
@@ -218,6 +215,8 @@ public class OperatorContext
 
     public void recordOutput(long sizeInBytes, long positions)
     {
+        checkArgument(sizeInBytes >= 0, "sizeInBytes is negative (%s)", sizeInBytes);
+        checkArgument(positions >= 0, "positions is negative (%s)", positions);
         outputDataSize.update(sizeInBytes);
         outputPositions.update(positions);
     }
@@ -242,6 +241,11 @@ public class OperatorContext
         this.connectorMetrics.set(metrics);
     }
 
+    public void setPipelineOperatorMetrics(Metrics metrics)
+    {
+        getDriverContext().getPipelineContext().setPipelineOperatorMetrics(operatorId, metrics);
+    }
+
     Optional<ListenableFuture<Void>> getFinishedFuture()
     {
         return Optional.ofNullable(finishedFuture.get());
@@ -250,6 +254,11 @@ public class OperatorContext
     public void setFinishedFuture(ListenableFuture<Void> finishedFuture)
     {
         checkState(this.finishedFuture.getAndSet(requireNonNull(finishedFuture, "finishedFuture is null")) == null, "finishedFuture already set");
+    }
+
+    public void recordWriterInputDataSize(long sizeInBytes)
+    {
+        writerInputDataSize.getAndAdd(sizeInBytes);
     }
 
     public void recordPhysicalWrittenData(long sizeInBytes)
@@ -381,11 +390,6 @@ public class OperatorContext
             OperatorInfo info = infoSupplier.get();
             this.infoSupplier.set(info == null ? null : Suppliers.ofInstance(info));
         }
-        Supplier<List<OperatorStats>> nestedOperatorStatsSupplier = this.nestedOperatorStatsSupplier.get();
-        if (nestedOperatorStatsSupplier != null) {
-            List<OperatorStats> nestedStats = nestedOperatorStatsSupplier.get();
-            this.nestedOperatorStatsSupplier.set(nestedStats == null ? null : Suppliers.ofInstance(ImmutableList.copyOf(nestedStats)));
-        }
 
         operatorMemoryContext.close();
 
@@ -466,12 +470,6 @@ public class OperatorContext
         this.infoSupplier.set(infoSupplier);
     }
 
-    public void setNestedOperatorStatsSupplier(Supplier<List<OperatorStats>> nestedOperatorStatsSupplier)
-    {
-        requireNonNull(nestedOperatorStatsSupplier, "nestedOperatorStatsSupplier is null");
-        this.nestedOperatorStatsSupplier.set(nestedOperatorStatsSupplier);
-    }
-
     public CounterStat getInputDataSize()
     {
         return inputDataSize;
@@ -492,6 +490,11 @@ public class OperatorContext
         return outputPositions;
     }
 
+    public long getWriterInputDataSize()
+    {
+        return writerInputDataSize.get();
+    }
+
     public long getPhysicalWrittenDataSize()
     {
         return physicalWrittenDataSize.get();
@@ -503,14 +506,6 @@ public class OperatorContext
         return format("%s-%s", operatorType, planNodeId);
     }
 
-    public List<OperatorStats> getNestedOperatorStats()
-    {
-        Supplier<List<OperatorStats>> nestedOperatorStatsSupplier = this.nestedOperatorStatsSupplier.get();
-        return Optional.ofNullable(nestedOperatorStatsSupplier)
-                .map(Supplier::get)
-                .orElseGet(() -> ImmutableList.of(getOperatorStats()));
-    }
-
     public static Metrics getOperatorMetrics(Metrics operatorMetrics, long inputPositions, double cpuTimeSeconds, double wallTimeSeconds, double blockedWallSeconds)
     {
         return operatorMetrics.mergeWith(new Metrics(ImmutableMap.of(
@@ -520,22 +515,12 @@ public class OperatorContext
                 "Blocked time distribution (s)", TDigestHistogram.fromValue(blockedWallSeconds))));
     }
 
-    public static Metrics getConnectorMetrics(Metrics connectorMetrics, long physicalInputReadTimeNanos)
-    {
-        if (physicalInputReadTimeNanos == 0) {
-            return connectorMetrics;
-        }
-
-        return connectorMetrics.mergeWith(new Metrics(ImmutableMap.of(
-                "Physical input read time", new DurationTiming(new Duration(physicalInputReadTimeNanos, NANOSECONDS)))));
-    }
-
     public <C, R> R accept(QueryContextVisitor<C, R> visitor, C context)
     {
         return visitor.visitOperatorContext(this, context);
     }
 
-    private OperatorStats getOperatorStats()
+    public OperatorStats getOperatorStats()
     {
         Supplier<? extends OperatorInfo> infoSupplier = this.infoSupplier.get();
         OperatorInfo info = Optional.ofNullable(infoSupplier).map(Supplier::get).orElse(null);
@@ -577,7 +562,8 @@ public class OperatorContext
                         new Duration(addInputTiming.getCpuNanos() + getOutputTiming.getCpuNanos() + finishTiming.getCpuNanos(), NANOSECONDS).convertTo(SECONDS).getValue(),
                         new Duration(addInputTiming.getWallNanos() + getOutputTiming.getWallNanos() + finishTiming.getWallNanos(), NANOSECONDS).convertTo(SECONDS).getValue(),
                         new Duration(blockedWallNanos.get(), NANOSECONDS).convertTo(SECONDS).getValue()),
-                getConnectorMetrics(connectorMetrics.get(), physicalInputReadTimeNanos.get()),
+                connectorMetrics.get(),
+                Metrics.EMPTY, // will be filled in when aggregating at pipeline level
 
                 DataSize.ofBytes(physicalWrittenDataSize.get()),
 

@@ -14,8 +14,8 @@
 package io.trino.operator;
 
 import com.google.common.util.concurrent.ListenableFuture;
+import com.google.errorprone.annotations.ThreadSafe;
 import io.airlift.slice.Slice;
-import io.trino.connector.CatalogHandle;
 import io.trino.exchange.ExchangeDataSource;
 import io.trino.exchange.ExchangeManagerRegistry;
 import io.trino.exchange.LazyExchangeDataSource;
@@ -25,7 +25,9 @@ import io.trino.execution.buffer.PagesSerdeFactory;
 import io.trino.memory.context.LocalMemoryContext;
 import io.trino.metadata.Split;
 import io.trino.spi.Page;
-import io.trino.spi.connector.UpdatablePageSource;
+import io.trino.spi.catalog.CatalogName;
+import io.trino.spi.connector.CatalogHandle;
+import io.trino.spi.connector.CatalogHandle.CatalogVersion;
 import io.trino.spi.exchange.ExchangeId;
 import io.trino.split.RemoteSplit;
 import io.trino.sql.planner.plan.PlanNodeId;
@@ -33,21 +35,16 @@ import io.trino.util.Ciphers;
 import it.unimi.dsi.fastutil.ints.IntOpenHashSet;
 import it.unimi.dsi.fastutil.ints.IntSet;
 
-import javax.annotation.concurrent.ThreadSafe;
-
-import java.util.Optional;
-import java.util.function.Supplier;
-
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Preconditions.checkState;
-import static io.trino.connector.CatalogHandle.createRootCatalogHandle;
+import static io.trino.spi.connector.CatalogHandle.createRootCatalogHandle;
 import static java.lang.String.format;
 import static java.util.Objects.requireNonNull;
 
 public class ExchangeOperator
         implements SourceOperator
 {
-    public static final CatalogHandle REMOTE_CATALOG_HANDLE = createRootCatalogHandle("$remote");
+    public static final CatalogHandle REMOTE_CATALOG_HANDLE = createRootCatalogHandle(new CatalogName("$remote"), new CatalogVersion("remote"));
 
     public static class ExchangeOperatorFactory
             implements SourceOperatorFactory
@@ -73,9 +70,9 @@ public class ExchangeOperator
                 ExchangeManagerRegistry exchangeManagerRegistry)
         {
             this.operatorId = operatorId;
-            this.sourceId = sourceId;
-            this.directExchangeClientSupplier = directExchangeClientSupplier;
-            this.serdeFactory = serdeFactory;
+            this.sourceId = requireNonNull(sourceId, "sourceId is null");
+            this.directExchangeClientSupplier = requireNonNull(directExchangeClientSupplier, "directExchangeClientSupplier is null");
+            this.serdeFactory = requireNonNull(serdeFactory, "serdeFactory is null");
             this.retryPolicy = requireNonNull(retryPolicy, "retryPolicy is null");
             this.exchangeManagerRegistry = requireNonNull(exchangeManagerRegistry, "exchangeManagerRegistry is null");
         }
@@ -101,6 +98,7 @@ public class ExchangeOperator
                 exchangeDataSource = new LazyExchangeDataSource(
                         taskId.getQueryId(),
                         new ExchangeId(format("direct-exchange-%s-%s", taskId.getStageId().getId(), sourceId)),
+                        taskContext.getSession().getQuerySpan(),
                         directExchangeClientSupplier,
                         memoryContext,
                         taskContext::sourceTaskFailed,
@@ -171,15 +169,13 @@ public class ExchangeOperator
     }
 
     @Override
-    public Supplier<Optional<UpdatablePageSource>> addSplit(Split split)
+    public void addSplit(Split split)
     {
         requireNonNull(split, "split is null");
         checkArgument(split.getCatalogHandle().equals(REMOTE_CATALOG_HANDLE), "split is not a remote split");
 
         RemoteSplit remoteSplit = (RemoteSplit) split.getConnectorSplit();
         exchangeDataSource.addInput(remoteSplit.getExchangeInput());
-
-        return Optional::empty;
     }
 
     @Override
@@ -252,7 +248,13 @@ public class ExchangeOperator
     @Override
     public void close()
     {
+        updateExchangeDataSourceMetrics();
         exchangeDataSource.close();
+    }
+
+    private void updateExchangeDataSourceMetrics()
+    {
+        exchangeDataSource.getMetrics().ifPresent(operatorContext::setPipelineOperatorMetrics);
     }
 
     @ThreadSafe

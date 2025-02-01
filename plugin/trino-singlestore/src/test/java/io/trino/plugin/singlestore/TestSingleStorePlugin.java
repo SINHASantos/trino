@@ -17,7 +17,7 @@ import com.google.common.collect.ImmutableMap;
 import io.trino.spi.Plugin;
 import io.trino.spi.connector.ConnectorFactory;
 import io.trino.testing.TestingConnectorContext;
-import org.testng.annotations.Test;
+import org.junit.jupiter.api.Test;
 
 import static com.google.common.collect.MoreCollectors.toOptional;
 import static com.google.common.collect.Streams.stream;
@@ -32,17 +32,11 @@ public class TestSingleStorePlugin
                 .filter(connectorFactory -> connectorFactory.getName().equals("singlestore"))
                 .collect(toOptional())
                 .orElseThrow();
-        factory.create("test", ImmutableMap.of("connection-url", "jdbc:singlestore://test"), new TestingConnectorContext()).shutdown();
-    }
-
-    @Test
-    public void testCreateConnectorLegacyName()
-    {
-        Plugin plugin = new SingleStorePlugin();
-        ConnectorFactory factory = stream(plugin.getConnectorFactories())
-                .filter(connectorFactory -> connectorFactory.getName().equals("memsql"))
-                .collect(toOptional())
-                .orElseThrow();
-        factory.create("test", ImmutableMap.of("connection-url", "jdbc:singlestore://test"), new TestingConnectorContext()).shutdown();
+        factory.create(
+                "test",
+                ImmutableMap.of(
+                        "connection-url", "jdbc:singlestore://test",
+                        "bootstrap.quiet", "true"),
+                new TestingConnectorContext()).shutdown();
     }
 }

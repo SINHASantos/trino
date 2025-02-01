@@ -19,7 +19,7 @@ import io.airlift.units.Duration;
 import io.trino.sql.planner.OptimizerConfig;
 import io.trino.sql.planner.OptimizerConfig.JoinDistributionType;
 import io.trino.sql.planner.OptimizerConfig.JoinReorderingStrategy;
-import org.testng.annotations.Test;
+import org.junit.jupiter.api.Test;
 
 import java.util.Map;
 
@@ -28,6 +28,7 @@ import static io.airlift.configuration.testing.ConfigAssertions.assertRecordedDe
 import static io.airlift.configuration.testing.ConfigAssertions.recordDefaults;
 import static io.airlift.units.DataSize.Unit.GIGABYTE;
 import static io.airlift.units.DataSize.Unit.MEGABYTE;
+import static io.trino.sql.planner.OptimizerConfig.DistinctAggregationsStrategy.MARK_DISTINCT;
 import static io.trino.sql.planner.OptimizerConfig.JoinDistributionType.BROADCAST;
 import static io.trino.sql.planner.OptimizerConfig.JoinReorderingStrategy.NONE;
 import static java.util.concurrent.TimeUnit.MINUTES;
@@ -46,12 +47,11 @@ public class TestOptimizerConfig
                 .setJoinDistributionType(JoinDistributionType.AUTOMATIC)
                 .setJoinMultiClauseIndependenceFactor(0.25)
                 .setJoinReorderingStrategy(JoinReorderingStrategy.AUTOMATIC)
-                .setMaxReorderedJoins(9)
-                .setDistributedIndexJoinsEnabled(false)
-                .setColocatedJoinsEnabled(false)
+                .setMaxReorderedJoins(8)
+                .setMaxPrefetchedInformationSchemaPrefixes(100)
+                .setColocatedJoinsEnabled(true)
                 .setSpatialJoinsEnabled(true)
                 .setUsePreferredWritePartitioning(true)
-                .setPreferredWritePartitioningMinNumberOfPartitions(50)
                 .setEnableStatsCalculator(true)
                 .setStatisticsPrecalculationForPushdownEnabled(true)
                 .setCollectPlanStatisticsForAllQueries(false)
@@ -60,17 +60,15 @@ public class TestOptimizerConfig
                 .setFilterConjunctionIndependenceFactor(0.75)
                 .setNonEstimatablePredicateApproximationEnabled(true)
                 .setOptimizeMetadataQueries(false)
-                .setOptimizeHashGeneration(true)
                 .setPushTableWriteThroughUnion(true)
                 .setDictionaryAggregation(false)
-                .setOptimizeMixedDistinctAggregations(false)
                 .setIterativeOptimizerTimeout(new Duration(3, MINUTES))
                 .setEnableForcedExchangeBelowGroupId(true)
                 .setEnableIntermediateAggregations(false)
                 .setPushAggregationThroughOuterJoin(true)
-                .setPushPartialAggregationThoughJoin(false)
+                .setPushPartialAggregationThroughJoin(true)
                 .setPreAggregateCaseAggregationsEnabled(true)
-                .setUseMarkDistinct(true)
+                .setDistinctAggregationsStrategy(null)
                 .setPreferPartialAggregation(true)
                 .setOptimizeTopNRanking(true)
                 .setDistributedSortEnabled(true)
@@ -86,10 +84,14 @@ public class TestOptimizerConfig
                 .setMergeProjectWithValues(true)
                 .setForceSingleNodeOutput(false)
                 .setAdaptivePartialAggregationEnabled(true)
-                .setAdaptivePartialAggregationMinRows(100_000)
                 .setAdaptivePartialAggregationUniqueRowsRatioThreshold(0.8)
                 .setJoinPartitionedBuildMinRowCount(1_000_000)
-                .setUseExactPartitioning(false));
+                .setMinInputSizePerTask(DataSize.of(5, GIGABYTE))
+                .setMinInputRowsPerTask(10_000_000L)
+                .setUseExactPartitioning(false)
+                .setUseCostBasedPartitioning(true)
+                .setPushFilterIntoValuesMaxRowCount(100)
+                .setUnsafePushdownAllowed(false));
     }
 
     @Test
@@ -111,25 +113,22 @@ public class TestOptimizerConfig
                 .put("optimizer.join-multi-clause-independence-factor", "0.75")
                 .put("optimizer.join-reordering-strategy", "NONE")
                 .put("optimizer.max-reordered-joins", "5")
+                .put("optimizer.experimental-max-prefetched-information-schema-prefixes", "10")
                 .put("iterative-optimizer-timeout", "10s")
                 .put("enable-forced-exchange-below-group-id", "false")
-                .put("distributed-index-joins-enabled", "true")
-                .put("colocated-joins-enabled", "true")
+                .put("colocated-joins-enabled", "false")
                 .put("spatial-joins-enabled", "false")
                 .put("distributed-sort", "false")
                 .put("use-preferred-write-partitioning", "false")
-                .put("preferred-write-partitioning-min-number-of-partitions", "10")
                 .put("optimizer.optimize-metadata-queries", "true")
-                .put("optimizer.optimize-hash-generation", "false")
-                .put("optimizer.optimize-mixed-distinct-aggregations", "true")
                 .put("optimizer.push-table-write-through-union", "false")
                 .put("optimizer.dictionary-aggregation", "true")
                 .put("optimizer.push-aggregation-through-outer-join", "false")
-                .put("optimizer.push-partial-aggregation-through-join", "true")
+                .put("optimizer.push-partial-aggregation-through-join", "false")
                 .put("optimizer.pre-aggregate-case-aggregations.enabled", "false")
                 .put("optimizer.enable-intermediate-aggregations", "true")
                 .put("optimizer.force-single-node-output", "true")
-                .put("optimizer.use-mark-distinct", "false")
+                .put("optimizer.distinct-aggregations-strategy", "mark_distinct")
                 .put("optimizer.prefer-partial-aggregation", "false")
                 .put("optimizer.optimize-top-n-ranking", "false")
                 .put("optimizer.skip-redundant-sort", "false")
@@ -143,10 +142,14 @@ public class TestOptimizerConfig
                 .put("optimizer.table-scan-node-partitioning-min-bucket-to-task-ratio", "0.0")
                 .put("optimizer.merge-project-with-values", "false")
                 .put("adaptive-partial-aggregation.enabled", "false")
-                .put("adaptive-partial-aggregation.min-rows", "1")
                 .put("adaptive-partial-aggregation.unique-rows-ratio-threshold", "0.99")
                 .put("optimizer.join-partitioned-build-min-row-count", "1")
+                .put("optimizer.min-input-size-per-task", "1MB")
+                .put("optimizer.min-input-rows-per-task", "1000000")
                 .put("optimizer.use-exact-partitioning", "true")
+                .put("optimizer.use-cost-based-partitioning", "false")
+                .put("optimizer.push-filter-into-values-max-row-count", "5")
+                .put("optimizer.allow-unsafe-pushdown", "true")
                 .buildOrThrow();
 
         OptimizerConfig expected = new OptimizerConfig()
@@ -162,26 +165,23 @@ public class TestOptimizerConfig
                 .setJoinMultiClauseIndependenceFactor(0.75)
                 .setJoinReorderingStrategy(NONE)
                 .setMaxReorderedJoins(5)
+                .setMaxPrefetchedInformationSchemaPrefixes(10)
                 .setIterativeOptimizerTimeout(new Duration(10, SECONDS))
                 .setEnableForcedExchangeBelowGroupId(false)
-                .setDistributedIndexJoinsEnabled(true)
-                .setColocatedJoinsEnabled(true)
+                .setColocatedJoinsEnabled(false)
                 .setSpatialJoinsEnabled(false)
                 .setUsePreferredWritePartitioning(false)
-                .setPreferredWritePartitioningMinNumberOfPartitions(10)
                 .setDefaultFilterFactorEnabled(true)
                 .setFilterConjunctionIndependenceFactor(1.0)
                 .setNonEstimatablePredicateApproximationEnabled(false)
                 .setOptimizeMetadataQueries(true)
-                .setOptimizeHashGeneration(false)
-                .setOptimizeMixedDistinctAggregations(true)
                 .setPushTableWriteThroughUnion(false)
                 .setDictionaryAggregation(true)
                 .setPushAggregationThroughOuterJoin(false)
-                .setPushPartialAggregationThoughJoin(true)
+                .setPushPartialAggregationThroughJoin(false)
                 .setPreAggregateCaseAggregationsEnabled(false)
                 .setEnableIntermediateAggregations(true)
-                .setUseMarkDistinct(false)
+                .setDistinctAggregationsStrategy(MARK_DISTINCT)
                 .setPreferPartialAggregation(false)
                 .setOptimizeTopNRanking(false)
                 .setDistributedSortEnabled(false)
@@ -197,10 +197,14 @@ public class TestOptimizerConfig
                 .setMergeProjectWithValues(false)
                 .setForceSingleNodeOutput(true)
                 .setAdaptivePartialAggregationEnabled(false)
-                .setAdaptivePartialAggregationMinRows(1)
                 .setAdaptivePartialAggregationUniqueRowsRatioThreshold(0.99)
                 .setJoinPartitionedBuildMinRowCount(1)
-                .setUseExactPartitioning(true);
+                .setMinInputSizePerTask(DataSize.of(1, MEGABYTE))
+                .setMinInputRowsPerTask(1_000_000L)
+                .setUseExactPartitioning(true)
+                .setUseCostBasedPartitioning(false)
+                .setPushFilterIntoValuesMaxRowCount(5)
+                .setUnsafePushdownAllowed(true);
         assertFullMapping(properties, expected);
     }
 }

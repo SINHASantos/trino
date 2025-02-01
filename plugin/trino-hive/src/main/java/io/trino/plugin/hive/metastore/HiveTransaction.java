@@ -14,12 +14,13 @@
 package io.trino.plugin.hive.metastore;
 
 import com.google.common.collect.ImmutableList;
-import io.trino.plugin.hive.HiveMetastoreClosure;
-import io.trino.plugin.hive.HivePartition;
+import io.trino.metastore.AcidTransactionOwner;
+import io.trino.metastore.HiveMetastore;
+import io.trino.metastore.HivePartition;
 import io.trino.plugin.hive.HiveTableHandle;
 import io.trino.plugin.hive.acid.AcidTransaction;
+import io.trino.plugin.hive.util.ValidTxnWriteIdList;
 import io.trino.spi.connector.SchemaTableName;
-import org.apache.hadoop.hive.common.ValidTxnWriteIdList;
 
 import java.util.HashMap;
 import java.util.List;
@@ -62,7 +63,7 @@ public class HiveTransaction
 
     public ValidTxnWriteIdList getValidWriteIds(
             AcidTransactionOwner transactionOwner,
-            HiveMetastoreClosure metastore,
+            HiveMetastore metastore,
             HiveTableHandle tableHandle)
     {
         List<SchemaTableName> lockedTables;

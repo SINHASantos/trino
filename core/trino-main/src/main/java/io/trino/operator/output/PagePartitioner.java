@@ -15,16 +15,16 @@ package io.trino.operator.output;
 
 import com.google.common.collect.ImmutableList;
 import com.google.common.primitives.Ints;
-import com.google.common.util.concurrent.ListenableFuture;
 import io.airlift.slice.Slice;
 import io.airlift.units.DataSize;
 import io.trino.execution.buffer.OutputBuffer;
 import io.trino.execution.buffer.PageSerializer;
 import io.trino.execution.buffer.PagesSerdeFactory;
+import io.trino.memory.context.AggregatedMemoryContext;
+import io.trino.memory.context.LocalMemoryContext;
 import io.trino.operator.OperatorContext;
 import io.trino.operator.PartitionFunction;
 import io.trino.spi.Page;
-import io.trino.spi.PageBuilder;
 import io.trino.spi.block.Block;
 import io.trino.spi.block.DictionaryBlock;
 import io.trino.spi.block.RunLengthEncodedBlock;
@@ -33,22 +33,19 @@ import io.trino.spi.type.Type;
 import io.trino.util.Ciphers;
 import it.unimi.dsi.fastutil.ints.IntArrayList;
 import it.unimi.dsi.fastutil.ints.IntList;
+import jakarta.annotation.Nullable;
 
-import javax.annotation.Nullable;
-
+import java.io.Closeable;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.OptionalInt;
-import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.IntUnaryOperator;
-import java.util.function.Supplier;
 
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Verify.verify;
 import static io.trino.execution.buffer.PageSplitterUtil.splitPage;
-import static io.trino.operator.output.PartitionedOutputOperator.PartitionedOutputInfo;
 import static io.trino.spi.block.PageBuilderStatus.DEFAULT_MAX_PAGE_SIZE_IN_BYTES;
 import static java.lang.Math.max;
 import static java.lang.Math.min;
@@ -56,24 +53,25 @@ import static java.lang.Math.toIntExact;
 import static java.util.Objects.requireNonNull;
 
 public class PagePartitioner
+        implements Closeable
 {
     private static final int COLUMNAR_STRATEGY_COEFFICIENT = 2;
     private final OutputBuffer outputBuffer;
-    private final Type[] sourceTypes;
     private final PartitionFunction partitionFunction;
     private final int[] partitionChannels;
+    private final LocalMemoryContext memoryContext;
     @Nullable
     private final Block[] partitionConstantBlocks; // when null, no constants are present. Only non-null elements are constants
     private final PageSerializer serializer;
-    private final PageBuilder[] pageBuilders;
     private final PositionsAppenderPageBuilder[] positionsAppenders;
     private final boolean replicatesAnyRow;
+    private final boolean partitionProcessRleAndDictionaryBlocks;
     private final int nullChannel; // when >= 0, send the position to every partition if this channel is null
-    private final AtomicLong rowsAdded = new AtomicLong();
-    private final AtomicLong pagesAdded = new AtomicLong();
-    private final OperatorContext operatorContext;
 
     private boolean hasAnyRowBeenReplicated;
+    // outputSizeInBytes that has already been reported to the operator stats during release and should be subtracted
+    // from future stats reporting to avoid double counting
+    private long outputSizeReportedBeforeRelease;
 
     public PagePartitioner(
             PartitionFunction partitionFunction,
@@ -85,9 +83,10 @@ public class PagePartitioner
             PagesSerdeFactory serdeFactory,
             List<Type> sourceTypes,
             DataSize maxMemory,
-            OperatorContext operatorContext,
             PositionsAppenderFactory positionsAppenderFactory,
-            Optional<Slice> exchangeEncryptionKey)
+            Optional<Slice> exchangeEncryptionKey,
+            AggregatedMemoryContext aggregatedMemoryContext,
+            boolean partitionProcessRleAndDictionaryBlocks)
     {
         this.partitionFunction = requireNonNull(partitionFunction, "partitionFunction is null");
         this.partitionChannels = Ints.toArray(requireNonNull(partitionChannels, "partitionChannels is null"));
@@ -104,9 +103,8 @@ public class PagePartitioner
         this.replicatesAnyRow = replicatesAnyRow;
         this.nullChannel = nullChannel.orElse(-1);
         this.outputBuffer = requireNonNull(outputBuffer, "outputBuffer is null");
-        this.sourceTypes = sourceTypes.toArray(new Type[0]);
         this.serializer = serdeFactory.createSerializer(exchangeEncryptionKey.map(Ciphers::deserializeAesEncryptionKey));
-        this.operatorContext = requireNonNull(operatorContext, "operatorContext is null");
+        this.partitionProcessRleAndDictionaryBlocks = partitionProcessRleAndDictionaryBlocks;
 
         //  Ensure partition channels align with constant arguments provided
         for (int i = 0; i < this.partitionChannels.length; i++) {
@@ -116,76 +114,31 @@ public class PagePartitioner
             }
         }
 
-        int partitionCount = partitionFunction.getPartitionCount();
+        int partitionCount = partitionFunction.partitionCount();
         int pageSize = toIntExact(min(DEFAULT_MAX_PAGE_SIZE_IN_BYTES, maxMemory.toBytes() / partitionCount));
         pageSize = max(1, pageSize);
 
         this.positionsAppenders = new PositionsAppenderPageBuilder[partitionCount];
         for (int i = 0; i < partitionCount; i++) {
-            positionsAppenders[i] = PositionsAppenderPageBuilder.withMaxPageSize(pageSize, sourceTypes, positionsAppenderFactory);
+            positionsAppenders[i] = PositionsAppenderPageBuilder.withMaxPageSize(pageSize, requireNonNull(sourceTypes, "sourceTypes is null"), positionsAppenderFactory);
         }
-        this.pageBuilders = new PageBuilder[partitionCount];
-        for (int i = 0; i < partitionCount; i++) {
-            pageBuilders[i] = PageBuilder.withMaxPageSize(pageSize, sourceTypes);
-        }
+        this.memoryContext = aggregatedMemoryContext.newLocalMemoryContext(PagePartitioner.class.getSimpleName());
+        updateMemoryUsage();
     }
 
-    public ListenableFuture<Void> isFull()
+    public PartitionFunction getPartitionFunction()
     {
-        return outputBuffer.isFull();
+        return partitionFunction;
     }
 
-    public long getSizeInBytes()
-    {
-        // We use a foreach loop instead of streams
-        // as it has much better performance.
-        long sizeInBytes = 0;
-        for (PositionsAppenderPageBuilder pageBuilder : positionsAppenders) {
-            sizeInBytes += pageBuilder.getSizeInBytes();
-        }
-        for (PageBuilder pageBuilder : pageBuilders) {
-            sizeInBytes += pageBuilder.getSizeInBytes();
-        }
-        return sizeInBytes;
-    }
-
-    /**
-     * This method can be expensive for complex types.
-     */
-    public long getRetainedSizeInBytes()
-    {
-        long sizeInBytes = 0;
-        for (PositionsAppenderPageBuilder pageBuilder : positionsAppenders) {
-            sizeInBytes += pageBuilder.getRetainedSizeInBytes();
-        }
-        for (PageBuilder pageBuilder : pageBuilders) {
-            sizeInBytes += pageBuilder.getRetainedSizeInBytes();
-        }
-        sizeInBytes += serializer.getRetainedSizeInBytes();
-        return sizeInBytes;
-    }
-
-    public Supplier<PartitionedOutputInfo> getOperatorInfoSupplier()
-    {
-        return createPartitionedOutputOperatorInfoSupplier(rowsAdded, pagesAdded, outputBuffer);
-    }
-
-    private static Supplier<PartitionedOutputInfo> createPartitionedOutputOperatorInfoSupplier(AtomicLong rowsAdded, AtomicLong pagesAdded, OutputBuffer outputBuffer)
-    {
-        // Must be a separate static method to avoid embedding references to "this" in the supplier
-        requireNonNull(rowsAdded, "rowsAdded is null");
-        requireNonNull(pagesAdded, "pagesAdded is null");
-        requireNonNull(outputBuffer, "outputBuffer is null");
-        return () -> new PartitionedOutputInfo(rowsAdded.get(), pagesAdded.get(), outputBuffer.getPeakMemoryUsage());
-    }
-
-    public void partitionPage(Page page)
+    public void partitionPage(Page page, OperatorContext operatorContext)
     {
         if (page.getPositionCount() == 0) {
             return;
         }
 
-        if (page.getPositionCount() < partitionFunction.getPartitionCount() * COLUMNAR_STRATEGY_COEFFICIENT) {
+        int outputPositionCount = replicatesAnyRow && !hasAnyRowBeenReplicated ? page.getPositionCount() + positionsAppenders.length - 1 : page.getPositionCount();
+        if (page.getPositionCount() < partitionFunction.partitionCount() * COLUMNAR_STRATEGY_COEFFICIENT) {
             // Partition will have on average less than COLUMNAR_STRATEGY_COEFFICIENT rows.
             // Doing it column-wise would degrade performance, so we fall back to row-wise approach.
             // Performance degradation is the worst in case of skewed hash distribution when only small subset
@@ -195,6 +148,73 @@ public class PagePartitioner
         else {
             partitionPageByColumn(page);
         }
+        long outputSizeInBytes = flushPositionsAppenders(false);
+        updateMemoryUsage();
+        operatorContext.recordOutput(outputSizeInBytes, outputPositionCount);
+    }
+
+    private long adjustFlushedOutputSizeWithEagerlyReportedBytes(long flushedOutputSize)
+    {
+        // Reduce the flushed output size by the previously eagerly reported amount to avoid double counting
+        if (outputSizeReportedBeforeRelease > 0) {
+            long adjustmentAmount = min(flushedOutputSize, outputSizeReportedBeforeRelease);
+            outputSizeReportedBeforeRelease -= adjustmentAmount;
+            flushedOutputSize -= adjustmentAmount;
+        }
+        return flushedOutputSize;
+    }
+
+    private long adjustEagerlyReportedBytesWithBufferedBytesOnRelease(long bufferedBytesOnRelease)
+    {
+        // adjust the amount to eagerly report as output by the amount already eagerly reported if the new value
+        // is larger, since this indicates that no data was flushed and only the delta between the two values should
+        // be reported eagerly
+        if (bufferedBytesOnRelease > outputSizeReportedBeforeRelease) {
+            long additionalBufferedBytes = bufferedBytesOnRelease - outputSizeReportedBeforeRelease;
+            outputSizeReportedBeforeRelease = bufferedBytesOnRelease;
+            return additionalBufferedBytes;
+        }
+        else {
+            // buffered size is unchanged or reduced (as a result of flushing) since last release, so
+            // do not report any additional bytes as output eagerly
+            return 0;
+        }
+    }
+
+    /**
+     * Prepares this {@link PagePartitioner} for release to the pool by checking for dictionary mode appenders and either flattening
+     * them into direct appenders or forcing their current pages to flush to preserve a valuable dictionary encoded representation. This
+     * is done before release because we know that after reuse, the appenders will not observe any more inputs using the same dictionary.
+     * <p>
+     * When a {@link PagePartitioner} is released back to the {@link PagePartitionerPool} we don't know if it will ever be reused. If it is not
+     * reused, then we have no {@link OperatorContext} we can use to report the output size of the final flushed page, so instead we report the
+     * buffered bytes still in the partitioner after {@link PagePartitioner#prepareForRelease(OperatorContext)} as output bytes eagerly and record
+     * that amount in {@link #outputSizeReportedBeforeRelease}. If the {@link PagePartitioner} is reused after having reported buffered bytes eagerly,
+     * we then have to subtract that same amount from the subsequent output bytes to avoid double counting them.
+     */
+    public void prepareForRelease(OperatorContext operatorContext)
+    {
+        long bufferedSizeInBytes = 0;
+        long outputSizeInBytes = 0;
+        for (int partition = 0; partition < positionsAppenders.length; partition++) {
+            PositionsAppenderPageBuilder positionsAppender = positionsAppenders[partition];
+            Optional<Page> flushedPage = positionsAppender.flushOrFlattenBeforeRelease();
+            if (flushedPage.isPresent()) {
+                Page page = flushedPage.get();
+                outputSizeInBytes += page.getSizeInBytes();
+                enqueuePage(page, partition);
+            }
+            else {
+                // Dictionaries have now been flattened, so the new reported size is trustworthy to report
+                // eagerly
+                bufferedSizeInBytes += positionsAppender.getSizeInBytes();
+            }
+        }
+        updateMemoryUsage();
+        // Adjust flushed and buffered values against the previously eagerly reported sizes
+        outputSizeInBytes = adjustFlushedOutputSizeWithEagerlyReportedBytes(outputSizeInBytes);
+        bufferedSizeInBytes = adjustEagerlyReportedBytesWithBufferedBytesOnRelease(bufferedSizeInBytes);
+        operatorContext.recordOutput(outputSizeInBytes + bufferedSizeInBytes, 0 /* no new positions */);
     }
 
     public void partitionPageByRow(Page page)
@@ -207,8 +227,8 @@ public class PagePartitioner
         int position;
         // Handle "any row" replication outside of the inner loop processing
         if (replicatesAnyRow && !hasAnyRowBeenReplicated) {
-            for (PageBuilder pageBuilder : pageBuilders) {
-                appendRow(pageBuilder, page, 0);
+            for (PositionsAppenderPageBuilder pageBuilder : positionsAppenders) {
+                pageBuilder.appendToOutputPartition(page, 0);
             }
             hasAnyRowBeenReplicated = true;
             position = 1;
@@ -223,33 +243,21 @@ public class PagePartitioner
             Block nullsBlock = page.getBlock(nullChannel);
             for (; position < page.getPositionCount(); position++) {
                 if (nullsBlock.isNull(position)) {
-                    for (PageBuilder pageBuilder : pageBuilders) {
-                        appendRow(pageBuilder, page, position);
+                    for (PositionsAppenderPageBuilder pageBuilder : positionsAppenders) {
+                        pageBuilder.appendToOutputPartition(page, position);
                     }
                 }
                 else {
                     int partition = partitionFunction.getPartition(partitionFunctionArgs, position);
-                    appendRow(pageBuilders[partition], page, position);
+                    positionsAppenders[partition].appendToOutputPartition(page, position);
                 }
             }
         }
         else {
             for (; position < page.getPositionCount(); position++) {
                 int partition = partitionFunction.getPartition(partitionFunctionArgs, position);
-                appendRow(pageBuilders[partition], page, position);
+                positionsAppenders[partition].appendToOutputPartition(page, position);
             }
-        }
-
-        flushPageBuilders(false);
-    }
-
-    private void appendRow(PageBuilder pageBuilder, Page page, int position)
-    {
-        pageBuilder.declarePosition();
-
-        for (int channel = 0; channel < sourceTypes.length; channel++) {
-            Type type = sourceTypes[channel];
-            type.appendTo(page.getBlock(channel), position, pageBuilder.getBlockBuilder(channel));
         }
     }
 
@@ -257,15 +265,13 @@ public class PagePartitioner
     {
         IntArrayList[] partitionedPositions = partitionPositions(page);
 
-        for (int i = 0; i < partitionFunction.getPartitionCount(); i++) {
+        for (int i = 0; i < partitionFunction.partitionCount(); i++) {
             IntArrayList partitionPositions = partitionedPositions[i];
             if (!partitionPositions.isEmpty()) {
                 positionsAppenders[i].appendToOutputPartition(page, partitionPositions);
                 partitionPositions.clear();
             }
         }
-
-        flushPositionsAppenders(false);
     }
 
     private IntArrayList[] partitionPositions(Page page)
@@ -287,12 +293,12 @@ public class PagePartitioner
 
         Page partitionFunctionArgs = getPartitionFunctionArguments(page);
 
-        if (partitionFunctionArgs.getChannelCount() > 0 && onlyRleBlocks(partitionFunctionArgs)) {
+        if (partitionProcessRleAndDictionaryBlocks && partitionFunctionArgs.getChannelCount() > 0 && onlyRleBlocks(partitionFunctionArgs)) {
             // we need at least one Rle block since with no blocks partition function
             // can return a different value per invocation (e.g. RoundRobinBucketFunction)
             partitionBySingleRleValue(page, position, partitionFunctionArgs, partitionPositions);
         }
-        else if (partitionFunctionArgs.getChannelCount() == 1 && isDictionaryProcessingFaster(partitionFunctionArgs.getBlock(0))) {
+        else if (partitionProcessRleAndDictionaryBlocks && partitionFunctionArgs.getChannelCount() == 1 && isDictionaryProcessingFaster(partitionFunctionArgs.getBlock(0))) {
             partitionBySingleDictionary(page, position, partitionFunctionArgs, partitionPositions);
         }
         else {
@@ -307,13 +313,14 @@ public class PagePartitioner
         // want memory to explode in case there are input pages with many positions, where each page
         // is assigned to a single partition entirely.
         // For example this can happen for partition columns if they are represented by RLE blocks.
-        IntArrayList[] partitionPositions = new IntArrayList[partitionFunction.getPartitionCount()];
+        IntArrayList[] partitionPositions = new IntArrayList[partitionFunction.partitionCount()];
         for (int i = 0; i < partitionPositions.length; i++) {
-            partitionPositions[i] = new IntArrayList(initialPartitionSize(page.getPositionCount() / partitionFunction.getPartitionCount()));
+            partitionPositions[i] = new IntArrayList(initialPartitionSize(page.getPositionCount() / partitionFunction.partitionCount()));
         }
         return partitionPositions;
     }
 
+    @SuppressWarnings("NumericCastThatLosesPrecision")
     private static int initialPartitionSize(int averagePositionsPerPartition)
     {
         // 1.1 coefficient compensates for the not perfect hash distribution.
@@ -322,7 +329,7 @@ public class PagePartitioner
         return (int) (averagePositionsPerPartition * 1.1) + 32;
     }
 
-    private boolean onlyRleBlocks(Page page)
+    private static boolean onlyRleBlocks(Page page)
     {
         for (int i = 0; i < page.getChannelCount(); i++) {
             if (!(page.getBlock(i) instanceof RunLengthEncodedBlock)) {
@@ -336,7 +343,7 @@ public class PagePartitioner
     {
         // copy all positions because all hash function args are the same for every position
         if (nullChannel != -1 && page.getBlock(nullChannel).isNull(0)) {
-            verify(page.getBlock(nullChannel) instanceof RunLengthEncodedBlock, "null channel is not RunLengthEncodedBlock", page.getBlock(nullChannel));
+            verify(page.getBlock(nullChannel) instanceof RunLengthEncodedBlock, "null channel is not RunLengthEncodedBlock, found instead: %s", page.getBlock(nullChannel));
             // all positions are null
             int[] allPositions = integersInRange(position, page.getPositionCount());
             for (IntList partitionPosition : partitionPositions) {
@@ -355,7 +362,7 @@ public class PagePartitioner
         }
     }
 
-    private Page extractRlePage(Page page)
+    private static Page extractRlePage(Page page)
     {
         Block[] valueBlocks = new Block[page.getChannelCount()];
         for (int channel = 0; channel < valueBlocks.length; ++channel) {
@@ -364,7 +371,7 @@ public class PagePartitioner
         return new Page(valueBlocks);
     }
 
-    private int[] integersInRange(int start, int endExclusive)
+    private static int[] integersInRange(int start, int endExclusive)
     {
         int[] array = new int[endExclusive - start];
         int current = start;
@@ -374,12 +381,11 @@ public class PagePartitioner
         return array;
     }
 
-    private boolean isDictionaryProcessingFaster(Block block)
+    private static boolean isDictionaryProcessingFaster(Block block)
     {
-        if (!(block instanceof DictionaryBlock)) {
+        if (!(block instanceof DictionaryBlock dictionaryBlock)) {
             return false;
         }
-        DictionaryBlock dictionaryBlock = (DictionaryBlock) block;
         // if dictionary block positionCount is greater than number of elements in the dictionary
         // it will be faster to compute hash for the dictionary values only once and re-use it
         // instead of recalculating it.
@@ -410,7 +416,7 @@ public class PagePartitioner
         }
     }
 
-    private IntArrayList[] partitionNullablePositions(Page page, int position, IntArrayList[] partitionPositions, IntUnaryOperator partitionFunction)
+    private void partitionNullablePositions(Page page, int position, IntArrayList[] partitionPositions, IntUnaryOperator partitionFunction)
     {
         Block nullsBlock = page.getBlock(nullChannel);
         int[] nullPositions = new int[page.getPositionCount()];
@@ -432,10 +438,9 @@ public class PagePartitioner
             int partition = partitionFunction.applyAsInt(nonNullPosition);
             partitionPositions[partition].add(nonNullPosition);
         }
-        return partitionPositions;
     }
 
-    private IntArrayList[] partitionNotNullPositions(Page page, int startingPosition, IntArrayList[] partitionPositions, IntUnaryOperator partitionFunction)
+    private static void partitionNotNullPositions(Page page, int startingPosition, IntArrayList[] partitionPositions, IntUnaryOperator partitionFunction)
     {
         int positionCount = page.getPositionCount();
         int[] partitionPerPosition = new int[positionCount];
@@ -447,8 +452,6 @@ public class PagePartitioner
         for (int position = startingPosition; position < positionCount; position++) {
             partitionPositions[partitionPerPosition[position]].add(position);
         }
-
-        return partitionPositions;
     }
 
     private Page getPartitionFunctionArguments(Page page)
@@ -471,45 +474,38 @@ public class PagePartitioner
         return new Page(page.getPositionCount(), blocks);
     }
 
-    public void forceFlush()
+    @Override
+    public void close()
     {
-        flushPositionsAppenders(true);
-        flushPageBuilders(true);
-    }
-
-    private void flushPageBuilders(boolean force)
-    {
-        // add all full pages to output buffer
-        for (int partition = 0; partition < pageBuilders.length; partition++) {
-            PageBuilder partitionPageBuilder = pageBuilders[partition];
-            if (!partitionPageBuilder.isEmpty() && (force || partitionPageBuilder.isFull())) {
-                Page pagePartition = partitionPageBuilder.build();
-                partitionPageBuilder.reset();
-
-                enqueuePage(pagePartition, partition);
-            }
+        try {
+            flushPositionsAppenders(true);
+            outputSizeReportedBeforeRelease = 0;
+        }
+        finally {
+            // clear buffers before memory release
+            Arrays.fill(positionsAppenders, null);
+            memoryContext.close();
         }
     }
 
-    private void flushPositionsAppenders(boolean force)
+    private long flushPositionsAppenders(boolean force)
     {
+        long outputSizeInBytes = 0;
         // add all full pages to output buffer
         for (int partition = 0; partition < positionsAppenders.length; partition++) {
             PositionsAppenderPageBuilder partitionPageBuilder = positionsAppenders[partition];
             if (!partitionPageBuilder.isEmpty() && (force || partitionPageBuilder.isFull())) {
                 Page pagePartition = partitionPageBuilder.build();
+                outputSizeInBytes += pagePartition.getSizeInBytes();
                 enqueuePage(pagePartition, partition);
             }
         }
+        return adjustFlushedOutputSizeWithEagerlyReportedBytes(outputSizeInBytes);
     }
 
     private void enqueuePage(Page pagePartition, int partition)
     {
-        operatorContext.recordOutput(pagePartition.getSizeInBytes(), pagePartition.getPositionCount());
-
         outputBuffer.enqueue(partition, splitAndSerializePage(pagePartition));
-        pagesAdded.incrementAndGet();
-        rowsAdded.addAndGet(pagePartition.getPositionCount());
     }
 
     private List<Slice> splitAndSerializePage(Page page)
@@ -520,5 +516,15 @@ public class PagePartitioner
             builder.add(serializer.serialize(chunk));
         }
         return builder.build();
+    }
+
+    private void updateMemoryUsage()
+    {
+        long retainedSizeInBytes = 0;
+        for (PositionsAppenderPageBuilder pageBuilder : positionsAppenders) {
+            retainedSizeInBytes += pageBuilder.getRetainedSizeInBytes();
+        }
+        retainedSizeInBytes += serializer.getRetainedSizeInBytes();
+        memoryContext.setBytes(retainedSizeInBytes);
     }
 }

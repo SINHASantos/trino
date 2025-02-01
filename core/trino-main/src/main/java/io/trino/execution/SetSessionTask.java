@@ -14,21 +14,20 @@
 package io.trino.execution;
 
 import com.google.common.util.concurrent.ListenableFuture;
+import com.google.inject.Inject;
 import io.trino.Session;
-import io.trino.connector.CatalogHandle;
 import io.trino.execution.warnings.WarningCollector;
 import io.trino.metadata.SessionPropertyManager;
 import io.trino.security.AccessControl;
 import io.trino.security.SecurityContext;
 import io.trino.spi.TrinoException;
+import io.trino.spi.connector.CatalogHandle;
 import io.trino.spi.session.PropertyMetadata;
 import io.trino.spi.type.Type;
 import io.trino.sql.PlannerContext;
 import io.trino.sql.tree.Expression;
 import io.trino.sql.tree.QualifiedName;
 import io.trino.sql.tree.SetSession;
-
-import javax.inject.Inject;
 
 import java.util.List;
 
@@ -80,7 +79,7 @@ public class SetSessionTask
         // validate the property name
         PropertyMetadata<?> propertyMetadata;
         if (parts.size() == 1) {
-            accessControl.checkCanSetSystemSessionProperty(session.getIdentity(), parts.get(0));
+            accessControl.checkCanSetSystemSessionProperty(session.getIdentity(), session.getQueryId(), parts.get(0));
             propertyMetadata = sessionPropertyManager.getSystemSessionPropertyMetadata(parts.get(0))
                     .orElseThrow(() -> semanticException(INVALID_SESSION_PROPERTY, statement, "Session property '%s' does not exist", statement.getName()));
         }
@@ -110,7 +109,7 @@ public class SetSessionTask
             propertyMetadata.decode(objectValue);
         }
         catch (RuntimeException e) {
-            throw semanticException(INVALID_SESSION_PROPERTY, statement, e.getMessage());
+            throw semanticException(INVALID_SESSION_PROPERTY, statement, "%s", e.getMessage());
         }
 
         stateMachine.addSetSessionProperties(propertyName.toString(), value);

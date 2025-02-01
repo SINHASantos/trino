@@ -21,6 +21,7 @@ import io.trino.plugin.jdbc.JdbcClient;
 import io.trino.plugin.jdbc.JdbcColumnHandle;
 import io.trino.plugin.jdbc.JdbcExpression;
 import io.trino.plugin.jdbc.JdbcTypeHandle;
+import io.trino.plugin.jdbc.expression.ParameterizedExpression;
 import io.trino.spi.connector.AggregateFunction;
 import io.trino.spi.expression.Variable;
 import io.trino.spi.type.BigintType;
@@ -35,7 +36,7 @@ import static io.trino.plugin.base.aggregation.AggregateFunctionPatterns.distinc
 import static io.trino.plugin.base.aggregation.AggregateFunctionPatterns.functionName;
 import static io.trino.plugin.base.aggregation.AggregateFunctionPatterns.hasFilter;
 import static io.trino.plugin.base.aggregation.AggregateFunctionPatterns.singleArgument;
-import static io.trino.plugin.base.aggregation.AggregateFunctionPatterns.variable;
+import static io.trino.plugin.base.expression.ConnectorExpressionPatterns.variable;
 import static io.trino.spi.type.BigintType.BIGINT;
 import static java.lang.String.format;
 import static java.util.Objects.requireNonNull;
@@ -44,7 +45,7 @@ import static java.util.Objects.requireNonNull;
  * Implements {@code count(DISTINCT x)}.
  */
 public class ImplementCountDistinct
-        implements AggregateFunctionRule<JdbcExpression, String>
+        implements AggregateFunctionRule<JdbcExpression, ParameterizedExpression>
 {
     private static final Capture<Variable> ARGUMENT = newCapture();
 
@@ -71,7 +72,7 @@ public class ImplementCountDistinct
     }
 
     @Override
-    public Optional<JdbcExpression> rewrite(AggregateFunction aggregateFunction, Captures captures, RewriteContext<String> context)
+    public Optional<JdbcExpression> rewrite(AggregateFunction aggregateFunction, Captures captures, RewriteContext<ParameterizedExpression> context)
     {
         Variable argument = captures.get(ARGUMENT);
         JdbcColumnHandle columnHandle = (JdbcColumnHandle) context.getAssignment(argument.getName());
@@ -83,8 +84,10 @@ public class ImplementCountDistinct
             return Optional.empty();
         }
 
+        ParameterizedExpression rewrittenArgument = context.rewriteExpression(argument).orElseThrow();
         return Optional.of(new JdbcExpression(
-                format("count(DISTINCT %s)", context.rewriteExpression(argument).orElseThrow()),
+                format("count(DISTINCT %s)", rewrittenArgument.expression()),
+                rewrittenArgument.parameters(),
                 bigintTypeHandle));
     }
 }

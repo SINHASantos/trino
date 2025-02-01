@@ -134,16 +134,6 @@ public abstract class PlanVisitor<R, C>
         return visitPlan(node, context);
     }
 
-    public R visitDelete(DeleteNode node, C context)
-    {
-        return visitPlan(node, context);
-    }
-
-    public R visitUpdate(UpdateNode node, C context)
-    {
-        return visitPlan(node, context);
-    }
-
     public R visitTableExecute(TableExecuteNode node, C context)
     {
         return visitPlan(node, context);
@@ -165,6 +155,11 @@ public abstract class PlanVisitor<R, C>
     }
 
     public R visitTableDelete(TableDeleteNode node, C context)
+    {
+        return visitPlan(node, context);
+    }
+
+    public R visitTableUpdate(TableUpdateNode node, C context)
     {
         return visitPlan(node, context);
     }
@@ -255,6 +250,16 @@ public abstract class PlanVisitor<R, C>
     }
 
     public R visitTableFunction(TableFunctionNode node, C context)
+    {
+        return visitPlan(node, context);
+    }
+
+    public R visitTableFunctionProcessor(TableFunctionProcessorNode node, C context)
+    {
+        return visitPlan(node, context);
+    }
+
+    public R visitAdaptivePlanNode(AdaptivePlanNode node, C context)
     {
         return visitPlan(node, context);
     }

@@ -21,7 +21,6 @@ import io.trino.connector.MockConnectorFactory;
 import io.trino.connector.MockConnectorTableHandle;
 import io.trino.metadata.InMemoryNodeManager;
 import io.trino.metadata.InternalNodeManager;
-import io.trino.metadata.TableHandle;
 import io.trino.spi.connector.BucketFunction;
 import io.trino.spi.connector.ColumnHandle;
 import io.trino.spi.connector.ColumnMetadata;
@@ -30,17 +29,14 @@ import io.trino.spi.connector.ConnectorNodePartitioningProvider;
 import io.trino.spi.connector.ConnectorPartitioningHandle;
 import io.trino.spi.connector.ConnectorSession;
 import io.trino.spi.connector.ConnectorSplit;
-import io.trino.spi.connector.ConnectorTableHandle;
 import io.trino.spi.connector.ConnectorTablePartitioning;
 import io.trino.spi.connector.ConnectorTableProperties;
 import io.trino.spi.connector.ConnectorTransactionHandle;
-import io.trino.spi.connector.SchemaTableName;
 import io.trino.spi.predicate.TupleDomain;
 import io.trino.spi.type.Type;
 import io.trino.sql.planner.assertions.BasePlanTest;
-import io.trino.testing.LocalQueryRunner;
-import io.trino.testing.TestingTransactionHandle;
-import org.testng.annotations.Test;
+import io.trino.testing.PlanTester;
+import org.junit.jupiter.api.Test;
 
 import java.util.List;
 import java.util.Optional;
@@ -54,17 +50,15 @@ import static io.trino.spi.type.VarcharType.VARCHAR;
 import static io.trino.sql.planner.LogicalPlanner.Stage.OPTIMIZED_AND_VALIDATED;
 import static io.trino.sql.planner.SystemPartitioningHandle.SOURCE_DISTRIBUTION;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.aggregation;
+import static io.trino.sql.planner.assertions.PlanMatchPattern.aggregationFunction;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.anyTree;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.exchange;
-import static io.trino.sql.planner.assertions.PlanMatchPattern.functionCall;
-import static io.trino.sql.planner.assertions.PlanMatchPattern.project;
 import static io.trino.sql.planner.assertions.PlanMatchPattern.tableScan;
 import static io.trino.sql.planner.plan.AggregationNode.Step.FINAL;
 import static io.trino.sql.planner.plan.AggregationNode.Step.PARTIAL;
 import static io.trino.sql.planner.plan.ExchangeNode.Scope.LOCAL;
 import static io.trino.sql.planner.plan.ExchangeNode.Scope.REMOTE;
 import static io.trino.sql.planner.plan.ExchangeNode.Type.REPARTITION;
-import static io.trino.testing.TestingHandles.TEST_CATALOG_HANDLE;
 import static io.trino.testing.TestingHandles.TEST_CATALOG_NAME;
 import static io.trino.testing.TestingSession.testSessionBuilder;
 import static java.util.Objects.requireNonNull;
@@ -99,20 +93,6 @@ public class TestTableScanNodePartitioning
     public static final ConnectorPartitioningHandle SINGLE_BUCKET_HANDLE = new ConnectorPartitioningHandle() {};
     public static final ConnectorPartitioningHandle FIXED_PARTITIONING_HANDLE = new ConnectorPartitioningHandle() {};
 
-    public static final ConnectorTableHandle CONNECTOR_PARTITIONED_TABLE_HANDLE =
-            new MockConnectorTableHandle(new SchemaTableName(TEST_SCHEMA, PARTITIONED_TABLE));
-    public static final ConnectorTableHandle CONNECTOR_SINGLE_BUCKET_TABLE_HANDLE =
-            new MockConnectorTableHandle(new SchemaTableName(TEST_SCHEMA, SINGLE_BUCKET_TABLE));
-    public static final ConnectorTableHandle CONNECTOR_FIXED_PARTITIONED_TABLE_HANDLE =
-            new MockConnectorTableHandle(new SchemaTableName(TEST_SCHEMA, FIXED_PARTITIONED_TABLE));
-    public static final ConnectorTableHandle CONNECTOR_UNPARTITIONED_TABLE_HANDLE =
-            new MockConnectorTableHandle(new SchemaTableName(TEST_SCHEMA, UNPARTITIONED_TABLE));
-
-    public static final TableHandle PARTITIONED_TABLE_HANDLE = tableHandle(CONNECTOR_PARTITIONED_TABLE_HANDLE);
-    public static final TableHandle SINGLE_BUCKET_TABLE_HANDLE = tableHandle(CONNECTOR_SINGLE_BUCKET_TABLE_HANDLE);
-    public static final TableHandle FIXED_PARTITIONED_TABLE_HANDLE = tableHandle(CONNECTOR_FIXED_PARTITIONED_TABLE_HANDLE);
-    public static final TableHandle UNPARTITIONED_TABLE_HANDLE = tableHandle(CONNECTOR_UNPARTITIONED_TABLE_HANDLE);
-
     public static final String COLUMN_A = "column_a";
     public static final String COLUMN_B = "column_b";
 
@@ -120,18 +100,16 @@ public class TestTableScanNodePartitioning
     public static final ColumnHandle COLUMN_HANDLE_B = new MockConnectorColumnHandle(COLUMN_B, VARCHAR);
 
     @Override
-    protected LocalQueryRunner createLocalQueryRunner()
+    protected PlanTester createPlanTester()
     {
         Session.SessionBuilder sessionBuilder = testSessionBuilder()
                 .setCatalog(TEST_CATALOG_NAME)
                 .setSchema(TEST_SCHEMA)
                 .setSystemProperty(TASK_CONCURRENCY, "2"); // force parallel plan even on test nodes with single CPU
 
-        LocalQueryRunner queryRunner = LocalQueryRunner.builder(sessionBuilder.build())
-                .withNodeCountForStats(10)
-                .build();
-        queryRunner.createCatalog(TEST_CATALOG_NAME, createMockFactory(), ImmutableMap.of());
-        return queryRunner;
+        PlanTester planTester = PlanTester.create(sessionBuilder.build(), 10);
+        planTester.createCatalog(TEST_CATALOG_NAME, createMockFactory(), ImmutableMap.of());
+        return planTester;
     }
 
     @Test
@@ -169,11 +147,10 @@ public class TestTableScanNodePartitioning
         String query = "SELECT count(column_b) FROM " + table + " GROUP BY column_a";
         assertDistributedPlan(query, session,
                 anyTree(
-                        aggregation(ImmutableMap.of("COUNT", functionCall("count", ImmutableList.of("COUNT_PART"))), FINAL,
+                        aggregation(ImmutableMap.of("COUNT", aggregationFunction("count", ImmutableList.of("COUNT_PART"))), FINAL,
                                 exchange(LOCAL, REPARTITION,
-                                        project(
-                                                aggregation(ImmutableMap.of("COUNT_PART", functionCall("count", ImmutableList.of("B"))), PARTIAL,
-                                                        tableScan(table, ImmutableMap.of("A", "column_a", "B", "column_b"))))))));
+                                        aggregation(ImmutableMap.of("COUNT_PART", aggregationFunction("count", ImmutableList.of("B"))), PARTIAL,
+                                                tableScan(table, ImmutableMap.of("A", "column_a", "B", "column_b")))))));
         SubPlan subPlan = subplan(query, OPTIMIZED_AND_VALIDATED, false, session);
         assertThat(subPlan.getAllFragments()).hasSize(1);
         assertThat(subPlan.getAllFragments().get(0).getPartitioning().getConnectorHandle()).isEqualTo(expectedPartitioning);
@@ -184,12 +161,11 @@ public class TestTableScanNodePartitioning
         String query = "SELECT count(column_b) FROM " + table + " GROUP BY column_a";
         assertDistributedPlan("SELECT count(column_b) FROM " + table + " GROUP BY column_a", session,
                 anyTree(
-                        aggregation(ImmutableMap.of("COUNT", functionCall("count", ImmutableList.of("COUNT_PART"))), FINAL,
+                        aggregation(ImmutableMap.of("COUNT", aggregationFunction("count", ImmutableList.of("COUNT_PART"))), FINAL,
                                 exchange(LOCAL, REPARTITION,
                                         exchange(REMOTE, REPARTITION,
-                                                project(
-                                                        aggregation(ImmutableMap.of("COUNT_PART", functionCall("count", ImmutableList.of("B"))), PARTIAL,
-                                                                tableScan(table, ImmutableMap.of("A", "column_a", "B", "column_b")))))))));
+                                                aggregation(ImmutableMap.of("COUNT_PART", aggregationFunction("count", ImmutableList.of("B"))), PARTIAL,
+                                                        tableScan(table, ImmutableMap.of("A", "column_a", "B", "column_b"))))))));
         SubPlan subPlan = subplan(query, OPTIMIZED_AND_VALIDATED, false, session);
         assertThat(subPlan.getAllFragments()).hasSize(2);
         assertThat(subPlan.getAllFragments().get(1).getPartitioning().getConnectorHandle()).isEqualTo(SOURCE_DISTRIBUTION.getConnectorHandle());
@@ -203,27 +179,25 @@ public class TestTableScanNodePartitioning
                         new ColumnMetadata(COLUMN_A, BIGINT),
                         new ColumnMetadata(COLUMN_B, VARCHAR)))
                 .withGetTableProperties((session, tableHandle) -> {
-                    if (tableHandle.equals(CONNECTOR_PARTITIONED_TABLE_HANDLE)) {
+                    String tableName = ((MockConnectorTableHandle) tableHandle).getTableName().getTableName();
+                    if (tableName.equals(PARTITIONED_TABLE)) {
                         return new ConnectorTableProperties(
                                 TupleDomain.all(),
                                 Optional.of(new ConnectorTablePartitioning(PARTITIONING_HANDLE, ImmutableList.of(COLUMN_HANDLE_A))),
                                 Optional.empty(),
-                                Optional.empty(),
                                 ImmutableList.of());
                     }
-                    if (tableHandle.equals(CONNECTOR_SINGLE_BUCKET_TABLE_HANDLE)) {
+                    if (tableName.equals(SINGLE_BUCKET_TABLE)) {
                         return new ConnectorTableProperties(
                                 TupleDomain.all(),
                                 Optional.of(new ConnectorTablePartitioning(SINGLE_BUCKET_HANDLE, ImmutableList.of(COLUMN_HANDLE_A))),
                                 Optional.empty(),
-                                Optional.empty(),
                                 ImmutableList.of());
                     }
-                    if (tableHandle.equals(CONNECTOR_FIXED_PARTITIONED_TABLE_HANDLE)) {
+                    if (tableName.equals(FIXED_PARTITIONED_TABLE)) {
                         return new ConnectorTableProperties(
                                 TupleDomain.all(),
                                 Optional.of(new ConnectorTablePartitioning(FIXED_PARTITIONING_HANDLE, ImmutableList.of(COLUMN_HANDLE_A))),
-                                Optional.empty(),
                                 Optional.empty(),
                                 ImmutableList.of());
                     }
@@ -258,7 +232,11 @@ public class TestTableScanNodePartitioning
         }
 
         @Override
-        public ToIntFunction<ConnectorSplit> getSplitBucketFunction(ConnectorTransactionHandle transactionHandle, ConnectorSession session, ConnectorPartitioningHandle partitioningHandle)
+        public ToIntFunction<ConnectorSplit> getSplitBucketFunction(
+                ConnectorTransactionHandle transactionHandle,
+                ConnectorSession session,
+                ConnectorPartitioningHandle partitioningHandle,
+                int bucketCount)
         {
             throw new UnsupportedOperationException();
         }
@@ -268,13 +246,5 @@ public class TestTableScanNodePartitioning
         {
             throw new UnsupportedOperationException();
         }
-    }
-
-    private static TableHandle tableHandle(ConnectorTableHandle connectorTableHandle)
-    {
-        return new TableHandle(
-                TEST_CATALOG_HANDLE,
-                connectorTableHandle,
-                TestingTransactionHandle.create());
     }
 }

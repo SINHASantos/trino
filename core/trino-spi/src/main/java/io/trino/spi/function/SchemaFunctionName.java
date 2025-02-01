@@ -13,11 +13,13 @@
  */
 package io.trino.spi.function;
 
+import com.fasterxml.jackson.annotation.JsonCreator;
+import com.fasterxml.jackson.annotation.JsonProperty;
 import io.trino.spi.Experimental;
 
 import java.util.Objects;
 
-import static java.util.Objects.requireNonNull;
+import static java.util.Locale.ROOT;
 
 @Experimental(eta = "2022-10-31")
 public final class SchemaFunctionName
@@ -25,23 +27,26 @@ public final class SchemaFunctionName
     private final String schemaName;
     private final String functionName;
 
-    public SchemaFunctionName(String schemaName, String functionName)
+    @JsonCreator
+    public SchemaFunctionName(@JsonProperty("schemaName") String schemaName, @JsonProperty("functionName") String functionName)
     {
-        this.schemaName = requireNonNull(schemaName, "schemaName is null");
+        this.schemaName = schemaName.toLowerCase(ROOT);
         if (schemaName.isEmpty()) {
             throw new IllegalArgumentException("schemaName is empty");
         }
-        this.functionName = requireNonNull(functionName, "functionName is null");
+        this.functionName = functionName.toLowerCase(ROOT);
         if (functionName.isEmpty()) {
             throw new IllegalArgumentException("functionName is empty");
         }
     }
 
+    @JsonProperty
     public String getSchemaName()
     {
         return schemaName;
     }
 
+    @JsonProperty
     public String getFunctionName()
     {
         return functionName;

@@ -71,6 +71,7 @@ import static io.trino.plugin.pinot.query.PinotPatterns.singleInput;
 import static io.trino.plugin.pinot.query.PinotPatterns.transformFunction;
 import static io.trino.plugin.pinot.query.PinotPatterns.transformFunctionName;
 import static io.trino.plugin.pinot.query.PinotPatterns.transformFunctionType;
+import static io.trino.plugin.pinot.query.PinotTransformFunctionTypeResolver.getTransformFunctionType;
 import static java.lang.String.format;
 import static java.util.Objects.requireNonNull;
 import static java.util.stream.Collectors.joining;
@@ -196,25 +197,23 @@ public class PinotSqlFormatter
 
     private static String formatExpression(ExpressionContext expressionContext, Context context)
     {
-        switch (expressionContext.getType()) {
-            case LITERAL:
-                return singleQuoteValue(expressionContext.getLiteral());
-            case IDENTIFIER:
+        return switch (expressionContext.getType()) {
+            case LITERAL -> singleQuoteValue(expressionContext.getLiteral().getValue().toString());
+            case IDENTIFIER -> {
                 if (context.getColumnHandles().isPresent()) {
-                    return quoteIdentifier(getColumnHandle(expressionContext.getIdentifier(), context.getSchemaTableName(), context.getColumnHandles().get()).getColumnName());
+                    yield quoteIdentifier(getColumnHandle(expressionContext.getIdentifier(), context.getSchemaTableName(), context.getColumnHandles().get()).getColumnName());
                 }
-                return quoteIdentifier(expressionContext.getIdentifier());
-            case FUNCTION:
-                return formatFunction(expressionContext.getFunction(), context);
-        }
-        throw new PinotException(PINOT_EXCEPTION, Optional.empty(), format("Unsupported expression type '%s'", expressionContext.getType()));
+                yield quoteIdentifier(expressionContext.getIdentifier());
+            }
+            case FUNCTION -> formatFunction(expressionContext.getFunction(), context);
+        };
     }
 
     private static String formatFunction(FunctionContext functionContext, Context context)
     {
         Optional<String> result = Optional.empty();
         if (functionContext.getType() == FunctionContext.Type.TRANSFORM) {
-            Rule<FunctionContext> rule = FUNCTION_RULE_MAP.get(TransformFunctionType.getTransformFunctionType(functionContext.getFunctionName()));
+            Rule<FunctionContext> rule = FUNCTION_RULE_MAP.get(getTransformFunctionType(functionContext).orElseThrow());
 
             if (rule != null) {
                 result = applyRule(rule, functionContext, context);
@@ -625,23 +624,18 @@ public class PinotSqlFormatter
                     .map(expressionContext -> formatExpression(expressionContext, context))
                     .collect(toImmutableList());
             checkState(arguments.size() >= 2, "Unexpected expression '%s'", object);
-            int whenStatements = arguments.size() / 2;
-            StringBuilder builder = new StringBuilder("CASE ");
-            builder.append("WHEN ")
-                    .append(arguments.get(0))
-                    .append(" THEN ")
-                    .append(arguments.get(whenStatements));
+            StringBuilder builder = new StringBuilder("CASE");
 
-            for (int index = 1; index < whenStatements; index++) {
+            for (int index = 0; index < arguments.size() / 2; index++) {
                 builder.append(" WHEN ")
-                        .append(arguments.get(index))
+                        .append(arguments.get(index * 2))
                         .append(" THEN ")
-                        .append(arguments.get(index + whenStatements));
+                        .append(arguments.get(index * 2 + 1));
             }
 
             if (arguments.size() % 2 != 0) {
                 builder.append(" ELSE ")
-                        .append(arguments.get(arguments.size() - 1));
+                        .append(arguments.getLast());
             }
             return builder.append(" END").toString();
         }

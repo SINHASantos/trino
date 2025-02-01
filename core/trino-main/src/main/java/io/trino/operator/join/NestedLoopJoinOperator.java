@@ -100,7 +100,7 @@ public class NestedLoopJoinOperator
                     nestedLoopJoinBridge,
                     probeChannels,
                     buildChannels,
-                    () -> joinBridgeManager.probeOperatorClosed());
+                    joinBridgeManager::probeOperatorClosed);
         }
 
         @Override
@@ -262,10 +262,10 @@ public class NestedLoopJoinOperator
                 }
             }
             catch (ArithmeticException overflow) {
+                // Repeat larger position count a smaller position count number of times
+                Page outputPage = new Page(max(probePositions, buildPositions));
+                return new PageRepeatingIterator(outputPage, min(probePositions, buildPositions));
             }
-            // Repeat larger position count a smaller position count number of times
-            Page outputPage = new Page(max(probePositions, buildPositions));
-            return new PageRepeatingIterator(outputPage, min(probePositions, buildPositions));
         }
         if (probeChannels.length == 0 && probePage.getPositionCount() <= buildPage.getPositionCount()) {
             return new PageRepeatingIterator(buildPage.getColumns(buildChannels), probePage.getPositionCount());
@@ -279,7 +279,8 @@ public class NestedLoopJoinOperator
     // bi-morphic parent class for the two implementations allowed. Adding a third implementation will make getOutput megamorphic and
     // should be avoided
     @VisibleForTesting
-    abstract static class NestedLoopOutputIterator
+    abstract static sealed class NestedLoopOutputIterator
+            permits PageRepeatingIterator, NestedLoopPageBuilder
     {
         public abstract boolean hasNext();
 

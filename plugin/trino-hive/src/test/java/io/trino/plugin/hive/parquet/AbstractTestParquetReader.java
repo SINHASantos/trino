@@ -35,14 +35,13 @@ import io.trino.spi.type.Type;
 import org.apache.hadoop.hive.common.type.Date;
 import org.apache.hadoop.hive.common.type.HiveDecimal;
 import org.apache.hadoop.hive.common.type.Timestamp;
+import org.apache.hadoop.hive.ql.io.parquet.serde.ParquetHiveSerDe;
 import org.apache.hadoop.hive.serde2.objectinspector.ObjectInspector;
 import org.apache.hadoop.hive.serde2.objectinspector.primitive.JavaHiveDecimalObjectInspector;
 import org.apache.hadoop.hive.serde2.typeinfo.DecimalTypeInfo;
 import org.apache.parquet.schema.MessageType;
 import org.joda.time.DateTimeZone;
-import org.testng.annotations.BeforeClass;
-import org.testng.annotations.DataProvider;
-import org.testng.annotations.Test;
+import org.junit.jupiter.api.Test;
 
 import java.math.BigInteger;
 import java.util.ArrayList;
@@ -59,6 +58,7 @@ import java.util.concurrent.ThreadLocalRandom;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 import java.util.stream.Collectors;
+import java.util.stream.IntStream;
 import java.util.stream.Stream;
 
 import static com.google.common.base.Functions.compose;
@@ -94,7 +94,6 @@ import static io.trino.spi.type.VarbinaryType.VARBINARY;
 import static io.trino.spi.type.VarcharType.VARCHAR;
 import static io.trino.spi.type.VarcharType.createUnboundedVarcharType;
 import static io.trino.spi.type.VarcharType.createVarcharType;
-import static io.trino.testing.DataProviders.toDataProvider;
 import static io.trino.testing.DateTimeTestingUtils.sqlTimestampOf;
 import static io.trino.testing.StructuralTestUtil.mapType;
 import static java.lang.Math.floorDiv;
@@ -121,32 +120,23 @@ import static org.apache.hadoop.hive.serde2.objectinspector.primitive.PrimitiveO
 import static org.apache.hadoop.hive.serde2.objectinspector.primitive.PrimitiveObjectInspectorFactory.javaStringObjectInspector;
 import static org.apache.hadoop.hive.serde2.objectinspector.primitive.PrimitiveObjectInspectorFactory.javaTimestampObjectInspector;
 import static org.apache.parquet.schema.MessageTypeParser.parseMessageType;
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
-import static org.testng.Assert.assertEquals;
 
 public abstract class AbstractTestParquetReader
 {
     private static final int MAX_PRECISION_INT32 = toIntExact(maxPrecision(4));
     private static final int MAX_PRECISION_INT64 = toIntExact(maxPrecision(8));
 
-    @SuppressWarnings("FieldCanBeLocal")
-    private Logger parquetLogger;
-
     private final ParquetTester tester;
 
     protected AbstractTestParquetReader(ParquetTester tester)
     {
         this.tester = tester;
-    }
-
-    @BeforeClass
-    public void setUp()
-    {
-        assertEquals(DateTimeZone.getDefault(), DateTimeZone.forID("America/Bahia_Banderas"));
+        assertThat(DateTimeZone.getDefault()).isEqualTo(DateTimeZone.forID("America/Bahia_Banderas"));
 
         // Parquet has excessive logging at INFO level
-        parquetLogger = Logger.getLogger("org.apache.parquet.hadoop");
-        parquetLogger.setLevel(Level.WARNING);
+        Logger.getLogger("org.apache.parquet.hadoop").setLevel(Level.WARNING);
     }
 
     @Test
@@ -876,90 +866,6 @@ public abstract class AbstractTestParquetReader
     }
 
     @Test
-    public void testDecimalBackedByINT32()
-            throws Exception
-    {
-        for (int precision = 4; precision <= MAX_PRECISION_INT32; precision++) {
-            int scale = ThreadLocalRandom.current().nextInt(precision);
-            MessageType parquetSchema = parseMessageType(format("message hive_decimal { optional INT32 test (DECIMAL(%d, %d)); }", precision, scale));
-            int expectedPrecision = precision;
-
-            ImmutableList.Builder<Integer> writeValues = ImmutableList.builder();
-            int start = toIntExact(-1 * (Math.round(Math.pow(10, precision)) - 1));
-            int end = toIntExact(Math.round(Math.pow(10, precision)));
-            int step = Math.max((end - start) / 2_000, 1);
-            for (int value = start; value < end; value += step) {
-                writeValues.add(value);
-            }
-            List<Integer> intValues = writeValues.build();
-
-            tester.testRoundTrip(
-                    javaIntObjectInspector,
-                    intValues,
-                    intValues.stream()
-                            .map(value -> SqlDecimal.of(value, expectedPrecision, scale))
-                            .collect(Collectors.toList()),
-                    getOnlyElement(TEST_COLUMN),
-                    createDecimalType(precision, scale),
-                    Optional.of(parquetSchema),
-                    ParquetSchemaOptions.withIntegerBackedDecimals());
-
-            tester.testRoundTrip(
-                    javaIntObjectInspector,
-                    intValues,
-                    intValues.stream()
-                            .map(value -> SqlDecimal.of(value, MAX_PRECISION, scale))
-                            .collect(Collectors.toList()),
-                    getOnlyElement(TEST_COLUMN),
-                    createDecimalType(MAX_PRECISION, scale),
-                    Optional.of(parquetSchema),
-                    ParquetSchemaOptions.withIntegerBackedDecimals());
-        }
-    }
-
-    @Test
-    public void testDecimalBackedByINT64()
-            throws Exception
-    {
-        for (int precision = 4; precision <= MAX_PRECISION_INT64; precision++) {
-            int scale = ThreadLocalRandom.current().nextInt(precision);
-            MessageType parquetSchema = parseMessageType(format("message hive_decimal { optional INT64 test (DECIMAL(%d, %d)); }", precision, scale));
-            int expectedPrecision = precision;
-
-            ImmutableList.Builder<Long> writeValues = ImmutableList.builder();
-            long start = -1 * (Math.round(Math.pow(10, precision)) - 1);
-            long end = Math.round(Math.pow(10, precision));
-            long step = Math.max((end - start) / 2_000, 1);
-            for (long value = start; value < end; value += step) {
-                writeValues.add(value);
-            }
-            List<Long> longValues = writeValues.build();
-
-            tester.testRoundTrip(
-                    javaLongObjectInspector,
-                    longValues,
-                    longValues.stream()
-                            .map(value -> SqlDecimal.of(value, expectedPrecision, scale))
-                            .collect(Collectors.toList()),
-                    getOnlyElement(TEST_COLUMN),
-                    createDecimalType(precision, scale),
-                    Optional.of(parquetSchema),
-                    ParquetSchemaOptions.withIntegerBackedDecimals());
-
-            tester.testRoundTrip(
-                    javaLongObjectInspector,
-                    longValues,
-                    longValues.stream()
-                            .map(value -> SqlDecimal.of(value, MAX_PRECISION, scale))
-                            .collect(Collectors.toList()),
-                    getOnlyElement(TEST_COLUMN),
-                    createDecimalType(MAX_PRECISION, scale),
-                    Optional.of(parquetSchema),
-                    ParquetSchemaOptions.withIntegerBackedDecimals());
-        }
-    }
-
-    @Test
     public void testParquetShortDecimalWriteToTrinoDecimalWithNonMatchingScale()
             throws Exception
     {
@@ -968,32 +874,156 @@ public abstract class AbstractTestParquetReader
     }
 
     @Test
-    public void testDecimalBackedByFixedLenByteArray()
+    public void testDecimals()
             throws Exception
     {
-        for (int precision = 1; precision < MAX_PRECISION; precision++) {
-            int scale = ThreadLocalRandom.current().nextInt(precision);
-            ImmutableList.Builder<SqlDecimal> expectedValues = ImmutableList.builder();
-            ImmutableList.Builder<SqlDecimal> expectedValuesMaxPrecision = ImmutableList.builder();
-            ImmutableList.Builder<HiveDecimal> writeValues = ImmutableList.builder();
+        for (DecimalInput decimalInput : DecimalInput.values()) {
+            for (int precision = 1; precision <= decimalInput.getMaxSupportedPrecision(); precision++) {
+                int scale = ThreadLocalRandom.current().nextInt(precision);
+                MessageType parquetSchema = parseMessageType(format(
+                        "message hive_decimal { optional %s test (DECIMAL(%d, %d)); }",
+                        decimalInput.getPrimitiveTypeName(precision),
+                        precision,
+                        scale));
+                ImmutableList.Builder<SqlDecimal> expectedValues = ImmutableList.builder();
+                ImmutableList.Builder<SqlDecimal> expectedValuesMaxPrecision = ImmutableList.builder();
+                ImmutableList.Builder<Object> writeValuesBuilder = ImmutableList.builder();
 
-            BigInteger start = BigInteger.valueOf(10).pow(precision).subtract(ONE).negate();
-            BigInteger end = BigInteger.valueOf(10).pow(precision);
-            BigInteger step = BigInteger.valueOf(1).max(end.subtract(start).divide(BigInteger.valueOf(1_000)));
-            for (BigInteger value = start; value.compareTo(end) < 0; value = value.add(step)) {
-                writeValues.add(HiveDecimal.create(value, scale));
-                expectedValues.add(new SqlDecimal(value, precision, scale));
-                expectedValuesMaxPrecision.add(new SqlDecimal(value, MAX_PRECISION, scale));
+                BigInteger start = BigInteger.valueOf(10).pow(precision).subtract(ONE).negate();
+                BigInteger end = BigInteger.valueOf(10).pow(precision);
+                BigInteger step = BigInteger.valueOf(1).max(end.subtract(start).divide(BigInteger.valueOf(1_500)));
+                for (BigInteger value = start; value.compareTo(end) < 0; value = value.add(step)) {
+                    writeValuesBuilder.add(decimalInput.convertToWriteValue(value, scale));
+                    expectedValues.add(new SqlDecimal(value, precision, scale));
+                    expectedValuesMaxPrecision.add(new SqlDecimal(value, MAX_PRECISION, scale));
+                }
+                List<Object> writeValues = writeValuesBuilder.build();
+                tester.testRoundTrip(
+                        decimalInput.getParquetObjectInspector(precision, scale),
+                        writeValues,
+                        expectedValues.build(),
+                        createDecimalType(precision, scale),
+                        Optional.of(parquetSchema));
+                tester.testRoundTrip(
+                        decimalInput.getParquetObjectInspector(precision, scale),
+                        writeValues,
+                        expectedValuesMaxPrecision.build(),
+                        createDecimalType(MAX_PRECISION, scale),
+                        Optional.of(parquetSchema));
             }
-            tester.testRoundTrip(new JavaHiveDecimalObjectInspector(new DecimalTypeInfo(precision, scale)),
-                    writeValues.build(),
-                    expectedValues.build(),
-                    createDecimalType(precision, scale));
-            tester.testRoundTrip(new JavaHiveDecimalObjectInspector(new DecimalTypeInfo(precision, scale)),
-                    writeValues.build(),
-                    expectedValuesMaxPrecision.build(),
-                    createDecimalType(MAX_PRECISION, scale));
         }
+    }
+
+    private enum DecimalInput
+    {
+        INT32 {
+            @Override
+            String getPrimitiveTypeName(int precision)
+            {
+                return "INT32";
+            }
+
+            @Override
+            int getMaxSupportedPrecision()
+            {
+                return MAX_PRECISION_INT32;
+            }
+
+            @Override
+            ObjectInspector getParquetObjectInspector(int precision, int scale)
+            {
+                return javaIntObjectInspector;
+            }
+
+            @Override
+            Object convertToWriteValue(BigInteger value, int scale)
+            {
+                return value.intValueExact();
+            }
+        },
+        INT64 {
+            @Override
+            String getPrimitiveTypeName(int precision)
+            {
+                return "INT64";
+            }
+
+            @Override
+            int getMaxSupportedPrecision()
+            {
+                return MAX_PRECISION_INT64;
+            }
+
+            @Override
+            ObjectInspector getParquetObjectInspector(int precision, int scale)
+            {
+                return javaLongObjectInspector;
+            }
+
+            @Override
+            Object convertToWriteValue(BigInteger value, int scale)
+            {
+                return value.longValueExact();
+            }
+        },
+        BINARY {
+            @Override
+            String getPrimitiveTypeName(int precision)
+            {
+                return "BINARY";
+            }
+
+            @Override
+            int getMaxSupportedPrecision()
+            {
+                return MAX_PRECISION;
+            }
+
+            @Override
+            ObjectInspector getParquetObjectInspector(int precision, int scale)
+            {
+                return new JavaHiveDecimalObjectInspector(new DecimalTypeInfo(precision, scale));
+            }
+
+            @Override
+            Object convertToWriteValue(BigInteger value, int scale)
+            {
+                return HiveDecimal.create(value, scale);
+            }
+        },
+        FIXED_LEN_BYTE_ARRAY {
+            @Override
+            String getPrimitiveTypeName(int precision)
+            {
+                return format("FIXED_LEN_BYTE_ARRAY(%d)", ParquetHiveSerDe.PRECISION_TO_BYTE_COUNT[precision - 1]);
+            }
+
+            @Override
+            int getMaxSupportedPrecision()
+            {
+                return MAX_PRECISION;
+            }
+
+            @Override
+            ObjectInspector getParquetObjectInspector(int precision, int scale)
+            {
+                return new JavaHiveDecimalObjectInspector(new DecimalTypeInfo(precision, scale));
+            }
+
+            @Override
+            Object convertToWriteValue(BigInteger value, int scale)
+            {
+                return HiveDecimal.create(value, scale);
+            }
+        };
+
+        abstract String getPrimitiveTypeName(int precision);
+
+        abstract int getMaxSupportedPrecision();
+
+        abstract ObjectInspector getParquetObjectInspector(int precision, int scale);
+
+        abstract Object convertToWriteValue(BigInteger value, int scale);
     }
 
     @Test
@@ -1145,41 +1175,79 @@ public abstract class AbstractTestParquetReader
                 .isInstanceOf(TrinoException.class);
     }
 
-    @Test(dataProvider = "timestampPrecision")
-    public void testTimestamp(HiveTimestampPrecision precision)
+    @Test
+    public void testReadParquetInt32AsTrinoShortDecimal()
             throws Exception
     {
-        List<Long> epochMillisValues = ContiguousSet.create(Range.closedOpen((long) -1_000, (long) 1_000), DiscreteDomain.longs()).stream()
-                .map(millis -> System.currentTimeMillis() + millis)
-                .collect(toImmutableList());
-        List<Timestamp> writeValues = epochMillisValues.stream()
-                .map(AbstractTestParquetReader::longToTimestamp)
-                .collect(toImmutableList());
-        List<SqlTimestamp> readValues = epochMillisValues.stream()
-                .map(epochMillis -> SqlTimestamp.newInstance(precision.getPrecision(), epochMillis * 1_000, 0))
-                .collect(toImmutableList());
-        // INT96 backed timestamps are written by the default ParquetSchemaOptions
+        Iterable<Integer> writeValues = intsBetween(0, 31_234);
+        Optional<MessageType> parquetSchema = Optional.of(parseMessageType("message hive_decimal { optional INT32 test; }"));
+        // Read INT32 as a short decimal of precision >= 10 with zero scale
         tester.testRoundTrip(
-                javaTimestampObjectInspector,
+                javaIntObjectInspector,
                 writeValues,
-                readValues,
-                createTimestampType(precision.getPrecision()),
-                Optional.empty());
+                transform(writeValues, value -> new SqlDecimal(BigInteger.valueOf(value), 10, 0)),
+                createDecimalType(10),
+                parquetSchema);
+
+        // Read INT32 as a short decimal of precision >= 10 with non-zero scale
         tester.testRoundTrip(
-                javaTimestampObjectInspector,
-                writeValues,
-                readValues,
-                getOnlyElement(TEST_COLUMN),
-                createTimestampType(precision.getPrecision()),
-                Optional.empty(),
-                ParquetSchemaOptions.withInt64BackedTimestamps());
+                javaIntObjectInspector,
+                ImmutableList.of(Integer.MAX_VALUE),
+                ImmutableList.of(new SqlDecimal(BigInteger.valueOf(Integer.MAX_VALUE * 10L), 10, 1)),
+                createDecimalType(10, 1),
+                parquetSchema);
+
+        // Read INT32 as a short decimal if value is within supported precision
+        tester.testRoundTrip(
+                javaIntObjectInspector,
+                ImmutableList.of(9999),
+                ImmutableList.of(new SqlDecimal(BigInteger.valueOf(9999), 4, 0)),
+                createDecimalType(4, 0),
+                parquetSchema);
+
+        // Cannot read INT32 as a short decimal if value exceeds supported precision
+        assertThatThrownBy(() -> tester.assertRoundTripWithHiveWriter(
+                List.of(javaIntObjectInspector),
+                new Iterable[] {ImmutableList.of(Integer.MAX_VALUE)},
+                new Iterable[] {ImmutableList.of(new SqlDecimal(BigInteger.valueOf(Integer.MAX_VALUE), 9, 0))},
+                List.of("test"),
+                List.of(createDecimalType(9, 0)),
+                parquetSchema,
+                ParquetSchemaOptions.defaultOptions()))
+                .hasMessage("Cannot read parquet INT32 value '2147483647' as DECIMAL(9, 0)")
+                .isInstanceOf(TrinoException.class);
     }
 
-    @DataProvider
-    public Object[][] timestampPrecision()
+    @Test
+    public void testTimestamp()
+            throws Exception
     {
-        return Stream.of(HiveTimestampPrecision.values())
-                .collect(toDataProvider());
+        for (HiveTimestampPrecision precision : HiveTimestampPrecision.values()) {
+            List<Long> epochMillisValues = ContiguousSet.create(Range.closedOpen((long) -1_000, (long) 1_000), DiscreteDomain.longs()).stream()
+                    .map(millis -> System.currentTimeMillis() + millis)
+                    .collect(toImmutableList());
+            List<Timestamp> writeValues = epochMillisValues.stream()
+                    .map(AbstractTestParquetReader::longToTimestamp)
+                    .collect(toImmutableList());
+            List<SqlTimestamp> readValues = epochMillisValues.stream()
+                    .map(epochMillis -> SqlTimestamp.newInstance(precision.getPrecision(), epochMillis * 1_000, 0))
+                    .collect(toImmutableList());
+            // INT96 backed timestamps are written by the default ParquetSchemaOptions
+            tester.testRoundTrip(
+                    javaTimestampObjectInspector,
+                    writeValues,
+                    readValues,
+                    createTimestampType(precision.getPrecision()),
+                    Optional.empty());
+            tester.testRoundTrip(
+                    javaTimestampObjectInspector,
+                    writeValues,
+                    readValues,
+                    getOnlyElement(TEST_COLUMN),
+                    createTimestampType(precision.getPrecision()),
+                    Optional.empty(),
+                    ParquetSchemaOptions.withInt64BackedTimestamps());
+        }
     }
 
     @Test
@@ -1699,7 +1767,9 @@ public abstract class AbstractTestParquetReader
     public void testFloatSequence()
             throws Exception
     {
-        tester.testRoundTrip(javaFloatObjectInspector, floatSequence(0.0f, 0.1f, 30_000), REAL);
+        Iterable<Float> writeValues = floatSequence(0.0f, 0.1f, 30_000);
+        tester.testRoundTrip(javaFloatObjectInspector, writeValues, REAL);
+        tester.testRoundTrip(javaFloatObjectInspector, writeValues, transform(writeValues, AbstractTestParquetReader::floatToDouble), DOUBLE);
     }
 
     @Test
@@ -1714,6 +1784,9 @@ public abstract class AbstractTestParquetReader
         tester.testRoundTrip(javaFloatObjectInspector, ImmutableList.of(Float.NaN, -1.0f, Float.POSITIVE_INFINITY), REAL);
         tester.testRoundTrip(javaFloatObjectInspector, ImmutableList.of(Float.NaN, Float.NEGATIVE_INFINITY, 1.0f), REAL);
         tester.testRoundTrip(javaFloatObjectInspector, ImmutableList.of(Float.NaN, Float.NEGATIVE_INFINITY, Float.POSITIVE_INFINITY), REAL);
+
+        Iterable<Float> writeValues = ImmutableList.of(Float.NaN, -1000.0f, -0.0f, Float.NEGATIVE_INFINITY, Float.POSITIVE_INFINITY);
+        tester.testRoundTrip(javaFloatObjectInspector, writeValues, transform(writeValues, AbstractTestParquetReader::floatToDouble), DOUBLE);
     }
 
     @Test
@@ -1804,6 +1877,27 @@ public abstract class AbstractTestParquetReader
     }
 
     @Test
+    public void testReadFixedWidthByteArrayAsVarBinary()
+            throws Exception
+    {
+        Random random = new Random(2342890824L);
+        int typeLength = 5;
+        List<byte[]> writeValues = IntStream.range(0, 30_000)
+                .mapToObj(i -> {
+                    byte[] value = new byte[typeLength];
+                    random.nextBytes(value);
+                    return value;
+                })
+                .collect(toImmutableList());
+        tester.testRoundTrip(
+                javaByteArrayObjectInspector,
+                writeValues,
+                transform(writeValues, AbstractTestParquetReader::byteArrayToVarbinary),
+                VARBINARY,
+                Optional.of(parseMessageType(format("message varbinary { optional FIXED_LEN_BYTE_ARRAY(%s) test; }", typeLength))));
+    }
+
+    @Test
     public void testBinaryDictionarySequence()
             throws Exception
     {
@@ -1828,7 +1922,7 @@ public abstract class AbstractTestParquetReader
     public void testEmptyBinarySequence()
             throws Exception
     {
-        tester.testRoundTrip(javaByteArrayObjectInspector, limit(cycle(new byte[0]), 30_000), AbstractTestParquetReader::byteArrayToVarbinary, VARBINARY);
+        tester.testRoundTrip(javaByteArrayObjectInspector, limit(cycle(List.of(new byte[0])), 30_000), AbstractTestParquetReader::byteArrayToVarbinary, VARBINARY);
     }
 
     private static <T> Iterable<T> skipEvery(int n, Iterable<T> iterable)
@@ -2173,5 +2267,13 @@ public abstract class AbstractTestParquetReader
             return null;
         }
         return new SqlDate(input);
+    }
+
+    private static Double floatToDouble(Float input)
+    {
+        if (input == null) {
+            return null;
+        }
+        return Double.valueOf(input);
     }
 }

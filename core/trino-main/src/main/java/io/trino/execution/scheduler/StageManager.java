@@ -17,7 +17,10 @@ import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.graph.Traverser;
 import io.airlift.units.Duration;
+import io.opentelemetry.api.trace.Span;
+import io.opentelemetry.api.trace.Tracer;
 import io.trino.Session;
+import io.trino.execution.BasicStageInfo;
 import io.trino.execution.BasicStageStats;
 import io.trino.execution.NodeTaskMap;
 import io.trino.execution.QueryStateMachine;
@@ -37,7 +40,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
-import java.util.concurrent.ExecutorService;
 
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.collect.ImmutableList.toImmutableList;
@@ -66,7 +68,8 @@ class StageManager
             Metadata metadata,
             RemoteTaskFactory taskFactory,
             NodeTaskMap nodeTaskMap,
-            ExecutorService executor,
+            Tracer tracer,
+            Span schedulerSpan,
             SplitSchedulerStats schedulerStats,
             SubPlan planTree,
             boolean summarizeTaskInfo)
@@ -89,7 +92,9 @@ class StageManager
                     session,
                     summarizeTaskInfo,
                     nodeTaskMap,
-                    executor,
+                    queryStateMachine.getStateMachineExecutor(),
+                    tracer,
+                    schedulerSpan,
                     schedulerStats);
             StageId stageId = stage.getStageId();
             stages.put(stageId, stage);
@@ -242,6 +247,15 @@ class StageManager
         return buildStageInfo(rootStageId, stageInfos);
     }
 
+    public BasicStageInfo getBasicStageInfo()
+    {
+        Map<StageId, BasicStageInfo> stageInfos = stages.values().stream()
+                .map(SqlStage::getBasicStageInfo)
+                .collect(toImmutableMap(BasicStageInfo::getStageId, identity()));
+
+        return buildBasicStageInfo(rootStageId, stageInfos);
+    }
+
     private StageInfo buildStageInfo(StageId stageId, Map<StageId, StageInfo> stageInfos)
     {
         StageInfo parent = stageInfos.get(stageId);
@@ -263,6 +277,25 @@ class StageManager
                 childStages,
                 parent.getTables(),
                 parent.getFailureCause());
+    }
+
+    private BasicStageInfo buildBasicStageInfo(StageId stageId, Map<StageId, BasicStageInfo> stageInfos)
+    {
+        BasicStageInfo parent = stageInfos.get(stageId);
+        checkArgument(parent != null, "No stageInfo for %s", parent);
+        List<BasicStageInfo> childStages = children.get(stageId).stream()
+                .map(childStageId -> buildBasicStageInfo(childStageId, stageInfos))
+                .collect(toImmutableList());
+        if (childStages.isEmpty()) {
+            return parent;
+        }
+        return new BasicStageInfo(
+                parent.getStageId(),
+                parent.getState(),
+                parent.isCoordinatorOnly(),
+                parent.getStageStats(),
+                childStages,
+                parent.getTasks());
     }
 
     public long getUserMemoryReservation()

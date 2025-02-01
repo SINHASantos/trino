@@ -17,14 +17,13 @@ import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
-import com.google.common.collect.ImmutableMultimap;
-import com.google.common.collect.Multimap;
+import com.google.errorprone.annotations.Immutable;
 import io.trino.metadata.TableFunctionHandle;
-import io.trino.spi.ptf.Argument;
+import io.trino.spi.connector.CatalogHandle;
+import io.trino.spi.function.table.Argument;
 import io.trino.sql.planner.Symbol;
 
-import javax.annotation.concurrent.Immutable;
-
+import java.util.Collection;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -38,6 +37,7 @@ public class TableFunctionNode
         extends PlanNode
 {
     private final String name;
+    private final CatalogHandle functionCatalog;
     private final Map<String, Argument> arguments;
     private final List<Symbol> properOutputs;
     private final List<PlanNode> sources;
@@ -49,6 +49,7 @@ public class TableFunctionNode
     public TableFunctionNode(
             @JsonProperty("id") PlanNodeId id,
             @JsonProperty("name") String name,
+            @JsonProperty("functionCatalog") CatalogHandle functionCatalog,
             @JsonProperty("arguments") Map<String, Argument> arguments,
             @JsonProperty("properOutputs") List<Symbol> properOutputs,
             @JsonProperty("sources") List<PlanNode> sources,
@@ -58,6 +59,7 @@ public class TableFunctionNode
     {
         super(id);
         this.name = requireNonNull(name, "name is null");
+        this.functionCatalog = requireNonNull(functionCatalog, "functionCatalog is null");
         this.arguments = ImmutableMap.copyOf(arguments);
         this.properOutputs = ImmutableList.copyOf(properOutputs);
         this.sources = ImmutableList.copyOf(sources);
@@ -72,6 +74,12 @@ public class TableFunctionNode
     public String getName()
     {
         return name;
+    }
+
+    @JsonProperty
+    public CatalogHandle getFunctionCatalog()
+    {
+        return functionCatalog;
     }
 
     @JsonProperty
@@ -118,17 +126,12 @@ public class TableFunctionNode
 
         symbols.addAll(properOutputs);
 
-        for (int i = 0; i < sources.size(); i++) {
-            TableArgumentProperties sourceProperties = tableArgumentProperties.get(i);
-            if (sourceProperties.isPassThroughColumns()) {
-                symbols.addAll(sources.get(i).getOutputSymbols());
-            }
-            else {
-                sourceProperties.getSpecification()
-                        .map(DataOrganizationSpecification::getPartitionBy)
-                        .ifPresent(symbols::addAll);
-            }
-        }
+        tableArgumentProperties.stream()
+                .map(TableArgumentProperties::passThroughSpecification)
+                .map(PassThroughSpecification::columns)
+                .flatMap(Collection::stream)
+                .map(PassThroughColumn::symbol)
+                .forEach(symbols::add);
 
         return symbols.build();
     }
@@ -143,69 +146,51 @@ public class TableFunctionNode
     public PlanNode replaceChildren(List<PlanNode> newSources)
     {
         checkArgument(sources.size() == newSources.size(), "wrong number of new children");
-        return new TableFunctionNode(getId(), name, arguments, properOutputs, newSources, tableArgumentProperties, copartitioningLists, handle);
+        return new TableFunctionNode(
+                getId(),
+                name,
+                functionCatalog,
+                arguments,
+                properOutputs,
+                newSources,
+                tableArgumentProperties,
+                copartitioningLists,
+                handle);
     }
 
-    public static class TableArgumentProperties
+    public record TableArgumentProperties(
+            String argumentName,
+            boolean rowSemantics,
+            boolean pruneWhenEmpty,
+            PassThroughSpecification passThroughSpecification,
+            List<Symbol> requiredColumns,
+            Optional<DataOrganizationSpecification> specification)
     {
-        private final String argumentName;
-        private final Multimap<String, Symbol> columnMapping;
-        private final boolean rowSemantics;
-        private final boolean pruneWhenEmpty;
-        private final boolean passThroughColumns;
-        private final Optional<DataOrganizationSpecification> specification;
-
-        @JsonCreator
-        public TableArgumentProperties(
-                @JsonProperty("argumentName") String argumentName,
-                @JsonProperty("columnMapping") Multimap<String, Symbol> columnMapping,
-                @JsonProperty("rowSemantics") boolean rowSemantics,
-                @JsonProperty("pruneWhenEmpty") boolean pruneWhenEmpty,
-                @JsonProperty("passThroughColumns") boolean passThroughColumns,
-                @JsonProperty("specification") Optional<DataOrganizationSpecification> specification)
+        public TableArgumentProperties
         {
-            this.argumentName = requireNonNull(argumentName, "argumentName is null");
-            this.columnMapping = ImmutableMultimap.copyOf(columnMapping);
-            this.rowSemantics = rowSemantics;
-            this.pruneWhenEmpty = pruneWhenEmpty;
-            this.passThroughColumns = passThroughColumns;
-            this.specification = requireNonNull(specification, "specification is null");
+            requireNonNull(argumentName, "argumentName is null");
+            requireNonNull(passThroughSpecification, "passThroughSpecification is null");
+            requiredColumns = ImmutableList.copyOf(requiredColumns);
+            requireNonNull(specification, "specification is null");
         }
+    }
 
-        @JsonProperty
-        public String getArgumentName()
+    public record PassThroughSpecification(boolean declaredAsPassThrough, List<PassThroughColumn> columns)
+    {
+        public PassThroughSpecification
         {
-            return argumentName;
+            columns = ImmutableList.copyOf(columns);
+            checkArgument(
+                    declaredAsPassThrough || columns.stream().allMatch(PassThroughColumn::isPartitioningColumn),
+                    "non-partitioning pass-through column for non-pass-through source of a table function");
         }
+    }
 
-        @JsonProperty
-        public Multimap<String, Symbol> getColumnMapping()
+    public record PassThroughColumn(Symbol symbol, boolean isPartitioningColumn)
+    {
+        public PassThroughColumn
         {
-            return columnMapping;
-        }
-
-        @JsonProperty
-        public boolean isRowSemantics()
-        {
-            return rowSemantics;
-        }
-
-        @JsonProperty
-        public boolean isPruneWhenEmpty()
-        {
-            return pruneWhenEmpty;
-        }
-
-        @JsonProperty
-        public boolean isPassThroughColumns()
-        {
-            return passThroughColumns;
-        }
-
-        @JsonProperty
-        public Optional<DataOrganizationSpecification> getSpecification()
-        {
-            return specification;
+            requireNonNull(symbol, "symbol is null");
         }
     }
 }

@@ -16,7 +16,11 @@ package io.trino.parquet.reader.flat;
 import io.trino.spi.block.Block;
 import io.trino.spi.block.ShortArrayBlock;
 
+import java.util.List;
 import java.util.Optional;
+
+import static io.airlift.slice.SizeOf.sizeOf;
+import static java.lang.Math.toIntExact;
 
 public class ShortColumnAdapter
         implements ColumnAdapter<short[]>
@@ -45,5 +49,35 @@ public class ShortColumnAdapter
     public void copyValue(short[] source, int sourceIndex, short[] destination, int destinationIndex)
     {
         destination[destinationIndex] = source[sourceIndex];
+    }
+
+    @Override
+    public void decodeDictionaryIds(short[] values, int offset, int length, int[] ids, short[] dictionary)
+    {
+        for (int i = 0; i < length; i++) {
+            values[offset + i] = dictionary[ids[i]];
+        }
+    }
+
+    @Override
+    public long getSizeInBytes(short[] values)
+    {
+        return sizeOf(values);
+    }
+
+    @Override
+    public short[] merge(List<short[]> buffers)
+    {
+        long resultSize = 0;
+        for (short[] buffer : buffers) {
+            resultSize += buffer.length;
+        }
+        short[] result = new short[toIntExact(resultSize)];
+        int offset = 0;
+        for (short[] buffer : buffers) {
+            System.arraycopy(buffer, 0, result, offset, buffer.length);
+            offset += buffer.length;
+        }
+        return result;
     }
 }

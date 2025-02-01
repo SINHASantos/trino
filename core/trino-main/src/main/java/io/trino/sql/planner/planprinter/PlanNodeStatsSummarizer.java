@@ -13,7 +13,9 @@
  */
 package io.trino.sql.planner.planprinter;
 
+import com.google.common.collect.ArrayListMultimap;
 import com.google.common.collect.ImmutableMap;
+import com.google.common.collect.ListMultimap;
 import io.airlift.units.Duration;
 import io.trino.execution.StageInfo;
 import io.trino.execution.TaskInfo;
@@ -31,10 +33,10 @@ import java.util.Map;
 import java.util.Set;
 
 import static com.google.common.collect.Iterables.getLast;
-import static com.google.common.collect.Lists.reverse;
 import static io.airlift.units.DataSize.succinctBytes;
 import static io.trino.util.MoreMaps.mergeMaps;
 import static java.util.concurrent.TimeUnit.MILLISECONDS;
+import static java.util.concurrent.TimeUnit.NANOSECONDS;
 import static java.util.stream.Collectors.toList;
 
 public final class PlanNodeStatsSummarizer
@@ -50,15 +52,21 @@ public final class PlanNodeStatsSummarizer
 
     public static Map<PlanNodeId, PlanNodeStats> aggregateTaskStats(List<TaskInfo> taskInfos)
     {
-        Map<PlanNodeId, PlanNodeStats> aggregatedStats = new HashMap<>();
+        ListMultimap<PlanNodeId, PlanNodeStats> groupedStats = ArrayListMultimap.create();
         List<PlanNodeStats> planNodeStats = taskInfos.stream()
-                .map(TaskInfo::getStats)
+                .map(TaskInfo::stats)
                 .flatMap(taskStats -> getPlanNodeStats(taskStats).stream())
                 .collect(toList());
         for (PlanNodeStats stats : planNodeStats) {
-            aggregatedStats.merge(stats.getPlanNodeId(), stats, PlanNodeStats::mergeWith);
+            groupedStats.put(stats.getPlanNodeId(), stats);
         }
-        return aggregatedStats;
+
+        ImmutableMap.Builder<PlanNodeId, PlanNodeStats> aggregatedStatsBuilder = ImmutableMap.builder();
+        for (PlanNodeId planNodeId : groupedStats.keySet()) {
+            List<PlanNodeStats> groupedPlanNodeStats = groupedStats.get(planNodeId);
+            aggregatedStatsBuilder.put(planNodeId, groupedPlanNodeStats.get(0).mergeWith(groupedPlanNodeStats.subList(1, groupedPlanNodeStats.size())));
+        }
+        return aggregatedStatsBuilder.buildOrThrow();
     }
 
     private static List<PlanNodeStats> getPlanNodeStats(TaskStats taskStats)
@@ -78,6 +86,7 @@ public final class PlanNodeStatsSummarizer
         Map<PlanNodeId, Long> planNodeScheduledMillis = new HashMap<>();
         Map<PlanNodeId, Long> planNodeCpuMillis = new HashMap<>();
         Map<PlanNodeId, Long> planNodePhysicalInputDataSize = new HashMap<>();
+        Map<PlanNodeId, Double> planNodePhysicalInputReadNanos = new HashMap<>();
         Map<PlanNodeId, Long> planNodeBlockedMillis = new HashMap<>();
 
         Map<PlanNodeId, Map<String, BasicOperatorStats>> basicOperatorStats = new HashMap<>();
@@ -107,6 +116,7 @@ public final class PlanNodeStatsSummarizer
                 planNodeBlockedMillis.merge(planNodeId, operatorStats.getBlockedWall().toMillis(), Long::sum);
                 planNodeSpilledDataSize.merge(planNodeId, operatorStats.getSpilledDataSize().toBytes(), Long::sum);
                 planNodePhysicalInputDataSize.merge(planNodeId, operatorStats.getPhysicalInputDataSize().toBytes(), Long::sum);
+                planNodePhysicalInputReadNanos.merge(planNodeId, operatorStats.getPhysicalInputReadTime().getValue(NANOSECONDS), Double::sum);
                 // A plan node like LocalExchange consists of LocalExchangeSource which links to another pipeline containing LocalExchangeSink
                 if (operatorStats.getPlanNodeId().equals(inputPlanNode) && !pipelineStats.isInputPipeline()) {
                     continue;
@@ -138,7 +148,7 @@ public final class PlanNodeStatsSummarizer
 
             // Gather output statistics
             processedNodes.clear();
-            for (OperatorStats operatorStats : reverse(pipelineStats.getOperatorSummaries())) {
+            for (OperatorStats operatorStats : pipelineStats.getOperatorSummaries().reversed()) {
                 PlanNodeId planNodeId = operatorStats.getPlanNodeId();
 
                 // An "internal" pipeline like a hash build, links to another pipeline which is the actual output for this plan node
@@ -159,8 +169,7 @@ public final class PlanNodeStatsSummarizer
                 PlanNodeId planNodeId = operatorStats.getPlanNodeId();
 
                 // The only statistics we have for Window Functions are very low level, thus displayed only in VERBOSE mode
-                if (operatorStats.getInfo() instanceof WindowInfo) {
-                    WindowInfo windowInfo = (WindowInfo) operatorStats.getInfo();
+                if (operatorStats.getInfo() instanceof WindowInfo windowInfo) {
                     windowNodeStats.merge(planNodeId, WindowOperatorStats.create(windowInfo), WindowOperatorStats::mergeWith);
                 }
             }
@@ -203,6 +212,7 @@ public final class PlanNodeStatsSummarizer
                         planNodeInputPositions.get(planNodeId),
                         succinctBytes(planNodeInputBytes.get(planNodeId)),
                         succinctBytes(planNodePhysicalInputDataSize.getOrDefault(planNodeId, 0L)),
+                        new Duration(planNodePhysicalInputReadNanos.getOrDefault(planNodeId, 0.0), NANOSECONDS),
                         outputPositions,
                         succinctBytes(planNodeOutputBytes.getOrDefault(planNodeId, 0L)),
                         succinctBytes(planNodeSpilledDataSize.get(planNodeId)),

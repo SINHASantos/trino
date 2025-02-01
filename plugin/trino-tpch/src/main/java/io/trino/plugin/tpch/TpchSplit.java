@@ -16,23 +16,25 @@ package io.trino.plugin.tpch;
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableMap;
 import io.trino.spi.HostAddress;
 import io.trino.spi.connector.ConnectorSplit;
-import org.openjdk.jol.info.ClassLayout;
 
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 
 import static com.google.common.base.MoreObjects.toStringHelper;
 import static com.google.common.base.Preconditions.checkState;
 import static io.airlift.slice.SizeOf.estimatedSizeOf;
-import static java.lang.Math.toIntExact;
+import static io.airlift.slice.SizeOf.instanceSize;
 import static java.util.Objects.requireNonNull;
+import static java.util.stream.Collectors.joining;
 
 public class TpchSplit
         implements ConnectorSplit
 {
-    private static final int INSTANCE_SIZE = toIntExact(ClassLayout.parseClass(TpchSplit.class).instanceSize());
+    private static final int INSTANCE_SIZE = instanceSize(TpchSplit.class);
 
     private final int totalParts;
     private final int partNumber;
@@ -66,9 +68,13 @@ public class TpchSplit
     }
 
     @Override
-    public Object getInfo()
+    public Map<String, String> getSplitInfo()
     {
-        return this;
+        return ImmutableMap.<String, String>builder()
+                .put("addresses", addresses.stream().map(HostAddress::toString).collect(joining(",")))
+                .put("partNumber", String.valueOf(partNumber))
+                .put("totalParts", String.valueOf(totalParts))
+                .buildOrThrow();
     }
 
     @Override
@@ -94,8 +100,8 @@ public class TpchSplit
             return false;
         }
         TpchSplit other = (TpchSplit) obj;
-        return Objects.equals(this.totalParts, other.totalParts) &&
-                Objects.equals(this.partNumber, other.partNumber);
+        return this.totalParts == other.totalParts &&
+               this.partNumber == other.partNumber;
     }
 
     @Override

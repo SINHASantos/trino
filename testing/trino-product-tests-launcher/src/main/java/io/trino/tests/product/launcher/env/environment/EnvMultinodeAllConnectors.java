@@ -13,6 +13,7 @@
  */
 package io.trino.tests.product.launcher.env.environment;
 
+import com.google.inject.Inject;
 import io.trino.tests.product.launcher.docker.DockerFiles;
 import io.trino.tests.product.launcher.docker.DockerFiles.ResourceProvider;
 import io.trino.tests.product.launcher.env.Environment;
@@ -20,12 +21,11 @@ import io.trino.tests.product.launcher.env.EnvironmentProvider;
 import io.trino.tests.product.launcher.env.common.StandardMultinode;
 import io.trino.tests.product.launcher.env.common.TestsEnvironment;
 
-import javax.inject.Inject;
-
 import java.util.List;
 
 import static io.trino.tests.product.launcher.env.EnvironmentContainers.isTrinoContainer;
 import static io.trino.tests.product.launcher.env.common.Standard.CONTAINER_TRINO_ETC;
+import static io.trino.tests.product.launcher.env.common.Standard.CONTAINER_TRINO_JVM_CONFIG;
 import static org.testcontainers.utility.MountableFile.forHostPath;
 
 @TestsEnvironment
@@ -46,39 +46,40 @@ public final class EnvMultinodeAllConnectors
     {
         // blackhole, jmx, tpch are already configured in Standard base env
         List.of(
-                        // TODO accumulo needs to connect to ZooKeeper, it won't start otherwise
-                        //"accumulo",
-                        "atop",
                         "bigquery",
                         "cassandra",
                         "clickhouse",
+                        "delta_lake",
                         "druid",
-                        "delta-lake",
+                        "duckdb",
                         "elasticsearch",
+                        "faker",
                         "gsheets",
                         "hive",
                         "hudi",
                         "iceberg",
+                        "ignite",
                         "kafka",
-                        "kinesis",
                         "kudu",
-                        "localfile",
+                        "loki",
                         "mariadb",
                         "memory",
-                        "memsql",
                         "mongodb",
                         "mysql",
+                        "opensearch",
                         "oracle",
                         "phoenix5",
                         "pinot",
                         "postgresql",
                         "prometheus",
-                        "raptor-legacy",
                         "redis",
                         "redshift",
+                        "singlestore",
+                        "snowflake",
                         "sqlserver",
-                        "trino-thrift",
-                        "tpcds")
+                        "tpcds",
+                        "trino_thrift",
+                        "vertica")
                 .forEach(connector -> builder.addConnector(
                         connector,
                         forHostPath(configDir.getPath(connector + ".properties"))));
@@ -90,6 +91,9 @@ public final class EnvMultinodeAllConnectors
                 container.withCopyFileToContainer(
                         forHostPath(configDir.getPath("prometheus-bearer.txt")),
                         CONTAINER_TRINO_ETC + "/catalog/prometheus-bearer.txt");
+                container.withCopyFileToContainer(
+                        forHostPath(configDir.getPath("jvm.config")),
+                        CONTAINER_TRINO_JVM_CONFIG);
             }
         });
     }

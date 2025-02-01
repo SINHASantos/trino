@@ -21,20 +21,19 @@ import io.trino.spi.connector.ColumnHandle;
 import io.trino.spi.connector.ColumnMetadata;
 import io.trino.spi.connector.ColumnSchema;
 import io.trino.spi.type.Type;
-import org.openjdk.jol.info.ClassLayout;
 
 import java.util.Objects;
 import java.util.Optional;
 
 import static io.airlift.slice.SizeOf.estimatedSizeOf;
+import static io.airlift.slice.SizeOf.instanceSize;
 import static io.airlift.slice.SizeOf.sizeOf;
-import static java.lang.Math.toIntExact;
 import static java.util.Objects.requireNonNull;
 
 public final class JdbcColumnHandle
         implements ColumnHandle
 {
-    private static final int INSTANCE_SIZE = toIntExact(ClassLayout.parseClass(JdbcColumnHandle.class).instanceSize());
+    private static final int INSTANCE_SIZE = instanceSize(JdbcColumnHandle.class);
 
     private final String columnName;
     private final JdbcTypeHandle jdbcTypeHandle;
@@ -140,7 +139,7 @@ public final class JdbcColumnHandle
         return Joiner.on(":").skipNulls().join(
                 columnName,
                 columnType.getDisplayName(),
-                jdbcTypeHandle.getJdbcTypeName().orElse(null));
+                jdbcTypeHandle.jdbcTypeName().orElse(null));
     }
 
     public long getRetainedSizeInBytes()

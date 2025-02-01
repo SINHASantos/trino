@@ -13,17 +13,10 @@
  */
 package io.trino.operator;
 
-import com.google.common.collect.ImmutableList;
 import io.trino.spi.Page;
 import io.trino.spi.PageBuilder;
-import io.trino.spi.block.BlockBuilder;
-import io.trino.spi.type.Type;
-import org.openjdk.jol.info.ClassLayout;
 
-import java.util.List;
-
-import static io.trino.spi.type.BigintType.BIGINT;
-import static java.lang.Math.toIntExact;
+import static io.airlift.slice.SizeOf.instanceSize;
 
 /**
  * GroupByHash that provides a round robin group ID assignment.
@@ -31,7 +24,7 @@ import static java.lang.Math.toIntExact;
 public class CyclingGroupByHash
         implements GroupByHash
 {
-    private static final int INSTANCE_SIZE = toIntExact(ClassLayout.parseClass(CyclingGroupByHash.class).instanceSize());
+    private static final int INSTANCE_SIZE = instanceSize(CyclingGroupByHash.class);
 
     private final int totalGroupCount;
     private int maxGroupId;
@@ -42,16 +35,17 @@ public class CyclingGroupByHash
         this.totalGroupCount = totalGroupCount;
     }
 
+    private CyclingGroupByHash(CyclingGroupByHash other)
+    {
+        this.totalGroupCount = other.totalGroupCount;
+        this.maxGroupId = other.maxGroupId;
+        this.currentGroupId = other.currentGroupId;
+    }
+
     @Override
     public long getEstimatedSize()
     {
         return INSTANCE_SIZE;
-    }
-
-    @Override
-    public List<Type> getTypes()
-    {
-        return ImmutableList.of();
     }
 
     @Override
@@ -73,25 +67,19 @@ public class CyclingGroupByHash
     }
 
     @Override
-    public Work<GroupByIdBlock> getGroupIds(Page page)
+    public Work<int[]> getGroupIds(Page page)
     {
-        BlockBuilder blockBuilder = BIGINT.createBlockBuilder(null, page.getChannelCount());
+        int[] groupIds = new int[page.getPositionCount()];
         for (int i = 0; i < page.getPositionCount(); i++) {
-            BIGINT.writeLong(blockBuilder, currentGroupId);
+            groupIds[i] = currentGroupId;
             maxGroupId = Math.max(currentGroupId, maxGroupId);
             currentGroupId = (currentGroupId + 1) % totalGroupCount;
         }
-        return new CompletedWork<>(new GroupByIdBlock(getGroupCount(), blockBuilder.build()));
+        return new CompletedWork<>(groupIds);
     }
 
     @Override
-    public boolean contains(int position, Page page, int[] hashChannels)
-    {
-        throw new UnsupportedOperationException("Not yet supported");
-    }
-
-    @Override
-    public long getRawHash(int groupyId)
+    public long getRawHash(int groupId)
     {
         throw new UnsupportedOperationException("Not yet supported");
     }
@@ -100,5 +88,11 @@ public class CyclingGroupByHash
     public int getCapacity()
     {
         return totalGroupCount;
+    }
+
+    @Override
+    public GroupByHash copy()
+    {
+        return new CyclingGroupByHash(this);
     }
 }

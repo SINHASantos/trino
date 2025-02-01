@@ -14,9 +14,9 @@
 package io.trino.operator;
 
 import com.google.common.collect.ImmutableList;
+import com.google.errorprone.annotations.concurrent.GuardedBy;
 import io.trino.sql.planner.plan.PlanNodeId;
-
-import javax.annotation.concurrent.GuardedBy;
+import jakarta.annotation.Nullable;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -33,12 +33,13 @@ public class DriverFactory
     private final int pipelineId;
     private final boolean inputDriver;
     private final boolean outputDriver;
-    private final List<OperatorFactory> operatorFactories;
     private final Optional<PlanNodeId> sourceId;
     private final OptionalInt driverInstances;
 
+    // must synchronize between createDriver() and noMoreDrivers(), but isNoMoreDrivers() is safe without synchronizing
     @GuardedBy("this")
-    private boolean noMoreDrivers;
+    private volatile boolean noMoreDrivers;
+    private volatile List<OperatorFactory> operatorFactories;
 
     public DriverFactory(int pipelineId, boolean inputDriver, boolean outputDriver, List<OperatorFactory> operatorFactories, OptionalInt driverInstances)
     {
@@ -88,21 +89,26 @@ public class DriverFactory
         return driverInstances;
     }
 
+    @Nullable
     public List<OperatorFactory> getOperatorFactories()
     {
         return operatorFactories;
     }
 
-    public synchronized Driver createDriver(DriverContext driverContext)
+    public Driver createDriver(DriverContext driverContext)
     {
-        checkState(!noMoreDrivers, "noMoreDrivers is already set");
         requireNonNull(driverContext, "driverContext is null");
-        List<Operator> operators = new ArrayList<>();
+        List<Operator> operators = new ArrayList<>(operatorFactories.size());
         try {
-            for (OperatorFactory operatorFactory : operatorFactories) {
-                Operator operator = operatorFactory.createOperator(driverContext);
-                operators.add(operator);
+            synchronized (this) {
+                // must check noMoreDrivers after acquiring the lock
+                checkState(!noMoreDrivers, "noMoreDrivers is already set");
+                for (OperatorFactory operatorFactory : operatorFactories) {
+                    Operator operator = operatorFactory.createOperator(driverContext);
+                    operators.add(operator);
+                }
             }
+            // Driver creation can continue without holding the lock
             return Driver.createDriver(driverContext, operators);
         }
         catch (Throwable failure) {
@@ -126,6 +132,7 @@ public class DriverFactory
                     }
                 }
             }
+            driverContext.failed(failure);
             throw failure;
         }
     }
@@ -135,13 +142,16 @@ public class DriverFactory
         if (noMoreDrivers) {
             return;
         }
-        noMoreDrivers = true;
         for (OperatorFactory operatorFactory : operatorFactories) {
             operatorFactory.noMoreOperators();
         }
+        operatorFactories = null;
+        noMoreDrivers = true;
     }
 
-    public synchronized boolean isNoMoreDrivers()
+    // no need to synchronize when just checking the boolean flag
+    @SuppressWarnings("GuardedBy")
+    public boolean isNoMoreDrivers()
     {
         return noMoreDrivers;
     }

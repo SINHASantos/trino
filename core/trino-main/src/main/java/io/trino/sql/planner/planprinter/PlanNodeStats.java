@@ -13,12 +13,15 @@
  */
 package io.trino.sql.planner.planprinter;
 
+import com.google.common.collect.ArrayListMultimap;
 import com.google.common.collect.ImmutableMap;
+import com.google.common.collect.ListMultimap;
 import io.airlift.units.DataSize;
 import io.airlift.units.Duration;
 import io.trino.spi.Mergeable;
 import io.trino.sql.planner.plan.PlanNodeId;
 
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
@@ -30,6 +33,7 @@ import static java.lang.Double.max;
 import static java.lang.Math.sqrt;
 import static java.util.Objects.requireNonNull;
 import static java.util.concurrent.TimeUnit.MILLISECONDS;
+import static java.util.concurrent.TimeUnit.NANOSECONDS;
 
 public class PlanNodeStats
         implements Mergeable<PlanNodeStats>
@@ -42,6 +46,7 @@ public class PlanNodeStats
     private final long planNodeInputPositions;
     private final DataSize planNodeInputDataSize;
     private final DataSize planNodePhysicalInputDataSize;
+    private final Duration planNodePhysicalInputReadTime;
     private final long planNodeOutputPositions;
     private final DataSize planNodeOutputDataSize;
     private final DataSize planNodeSpilledDataSize;
@@ -56,6 +61,7 @@ public class PlanNodeStats
             long planNodeInputPositions,
             DataSize planNodeInputDataSize,
             DataSize planNodePhysicalInputDataSize,
+            Duration planNodePhysicalInputReadTime,
             long planNodeOutputPositions,
             DataSize planNodeOutputDataSize,
             DataSize planNodeSpilledDataSize,
@@ -68,6 +74,7 @@ public class PlanNodeStats
         this.planNodeBlockedTime = requireNonNull(planNodeBlockedTime, "planNodeBlockedTime is null");
         this.planNodeInputPositions = planNodeInputPositions;
         this.planNodePhysicalInputDataSize = planNodePhysicalInputDataSize;
+        this.planNodePhysicalInputReadTime = planNodePhysicalInputReadTime;
         this.planNodeInputDataSize = planNodeInputDataSize;
         this.planNodeOutputPositions = planNodeOutputPositions;
         this.planNodeOutputDataSize = planNodeOutputDataSize;
@@ -121,6 +128,11 @@ public class PlanNodeStats
     public DataSize getPlanNodePhysicalInputDataSize()
     {
         return planNodePhysicalInputDataSize;
+    }
+
+    public Duration getPlanNodePhysicalInputReadTime()
+    {
+        return planNodePhysicalInputReadTime;
     }
 
     public long getPlanNodeOutputPositions()
@@ -181,8 +193,64 @@ public class PlanNodeStats
                 new Duration(planNodeBlockedTime.toMillis() + other.getPlanNodeBlockedTime().toMillis(), MILLISECONDS),
                 planNodeInputPositions, planNodeInputDataSize,
                 succinctBytes(this.planNodePhysicalInputDataSize.toBytes() + other.planNodePhysicalInputDataSize.toBytes()),
+                new Duration(planNodePhysicalInputReadTime.toMillis() + other.getPlanNodePhysicalInputReadTime().toMillis(), MILLISECONDS),
                 planNodeOutputPositions, planNodeOutputDataSize,
                 succinctBytes(this.planNodeSpilledDataSize.toBytes() + other.planNodeSpilledDataSize.toBytes()),
                 operatorStats);
+    }
+
+    @Override
+    public PlanNodeStats mergeWith(List<PlanNodeStats> others)
+    {
+        long planNodeInputPositions = this.planNodeInputPositions;
+        long planNodeOutputPositions = this.planNodeOutputPositions;
+        long planNodeInputDataSizeBytes = planNodeInputDataSize.toBytes();
+        long planNodeOutputDataSizeBytes = planNodeOutputDataSize.toBytes();
+        long planNodePhysicalInputDataSizeBytes = planNodePhysicalInputDataSize.toBytes();
+        long planNodeSpilledDataSizeBytes = planNodeSpilledDataSize.toBytes();
+        long planNodeScheduledTimeMillis = planNodeScheduledTime.toMillis();
+        long planNodeCpuTimeMillis = planNodeCpuTime.toMillis();
+        long planNodeBlockedTimeMillis = planNodeBlockedTime.toMillis();
+        double planNodePhysicalInputReadNanos = planNodePhysicalInputReadTime.getValue(NANOSECONDS);
+        ListMultimap<String, BasicOperatorStats> groupedOperatorStats = ArrayListMultimap.create();
+        for (Map.Entry<String, BasicOperatorStats> entry : this.operatorStats.entrySet()) {
+            groupedOperatorStats.put(entry.getKey(), entry.getValue());
+        }
+
+        for (PlanNodeStats other : others) {
+            checkArgument(planNodeId.equals(other.getPlanNodeId()), "planNodeIds do not match. %s != %s", planNodeId, other.getPlanNodeId());
+            planNodeInputPositions += other.planNodeInputPositions;
+            planNodeOutputPositions += other.planNodeOutputPositions;
+            planNodeScheduledTimeMillis += other.planNodeScheduledTime.toMillis();
+            planNodeCpuTimeMillis += other.planNodeCpuTime.toMillis();
+            planNodeBlockedTimeMillis += other.planNodeBlockedTime.toMillis();
+            planNodePhysicalInputReadNanos += other.planNodePhysicalInputReadTime.getValue(NANOSECONDS);
+            planNodePhysicalInputDataSizeBytes += other.planNodePhysicalInputDataSize.toBytes();
+            planNodeInputDataSizeBytes += other.planNodeInputDataSize.toBytes();
+            planNodeOutputDataSizeBytes += other.planNodeOutputDataSize.toBytes();
+            planNodeSpilledDataSizeBytes += other.planNodeSpilledDataSize.toBytes();
+            for (Map.Entry<String, BasicOperatorStats> entry : other.operatorStats.entrySet()) {
+                groupedOperatorStats.put(entry.getKey(), entry.getValue());
+            }
+        }
+
+        ImmutableMap.Builder<String, BasicOperatorStats> mergedOperatorStatsBuilder = ImmutableMap.builder();
+        for (String key : groupedOperatorStats.keySet()) {
+            mergedOperatorStatsBuilder.put(key, BasicOperatorStats.merge(groupedOperatorStats.get(key)));
+        }
+
+        return new PlanNodeStats(
+                planNodeId,
+                new Duration(planNodeScheduledTimeMillis, MILLISECONDS),
+                new Duration(planNodeCpuTimeMillis, MILLISECONDS),
+                new Duration(planNodeBlockedTimeMillis, MILLISECONDS),
+                planNodeInputPositions,
+                succinctBytes(planNodeInputDataSizeBytes),
+                succinctBytes(planNodePhysicalInputDataSizeBytes),
+                new Duration(planNodePhysicalInputReadNanos, NANOSECONDS),
+                planNodeOutputPositions,
+                succinctBytes(planNodeOutputDataSizeBytes),
+                succinctBytes(planNodeSpilledDataSizeBytes),
+                mergedOperatorStatsBuilder.buildOrThrow());
     }
 }

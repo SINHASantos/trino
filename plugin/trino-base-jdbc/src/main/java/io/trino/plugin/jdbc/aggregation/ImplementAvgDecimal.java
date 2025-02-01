@@ -19,6 +19,7 @@ import io.trino.matching.Pattern;
 import io.trino.plugin.base.aggregation.AggregateFunctionRule;
 import io.trino.plugin.jdbc.JdbcColumnHandle;
 import io.trino.plugin.jdbc.JdbcExpression;
+import io.trino.plugin.jdbc.expression.ParameterizedExpression;
 import io.trino.spi.connector.AggregateFunction;
 import io.trino.spi.expression.Variable;
 import io.trino.spi.type.DecimalType;
@@ -28,17 +29,17 @@ import java.util.Optional;
 import static com.google.common.base.Verify.verify;
 import static io.trino.matching.Capture.newCapture;
 import static io.trino.plugin.base.aggregation.AggregateFunctionPatterns.basicAggregation;
-import static io.trino.plugin.base.aggregation.AggregateFunctionPatterns.expressionType;
 import static io.trino.plugin.base.aggregation.AggregateFunctionPatterns.functionName;
 import static io.trino.plugin.base.aggregation.AggregateFunctionPatterns.singleArgument;
-import static io.trino.plugin.base.aggregation.AggregateFunctionPatterns.variable;
+import static io.trino.plugin.base.expression.ConnectorExpressionPatterns.type;
+import static io.trino.plugin.base.expression.ConnectorExpressionPatterns.variable;
 import static java.lang.String.format;
 
 /**
  * Implements {@code avg(decimal(p, s)}
  */
 public class ImplementAvgDecimal
-        implements AggregateFunctionRule<JdbcExpression, String>
+        implements AggregateFunctionRule<JdbcExpression, ParameterizedExpression>
 {
     private static final Capture<Variable> ARGUMENT = newCapture();
 
@@ -49,20 +50,22 @@ public class ImplementAvgDecimal
                 .with(functionName().equalTo("avg"))
                 .with(singleArgument().matching(
                         variable()
-                                .with(expressionType().matching(DecimalType.class::isInstance))
+                                .with(type().matching(DecimalType.class::isInstance))
                                 .capturedAs(ARGUMENT)));
     }
 
     @Override
-    public Optional<JdbcExpression> rewrite(AggregateFunction aggregateFunction, Captures captures, RewriteContext<String> context)
+    public Optional<JdbcExpression> rewrite(AggregateFunction aggregateFunction, Captures captures, RewriteContext<ParameterizedExpression> context)
     {
         Variable argument = captures.get(ARGUMENT);
         JdbcColumnHandle columnHandle = (JdbcColumnHandle) context.getAssignment(argument.getName());
         DecimalType type = (DecimalType) columnHandle.getColumnType();
         verify(aggregateFunction.getOutputType().equals(type));
 
+        ParameterizedExpression rewrittenArgument = context.rewriteExpression(argument).orElseThrow();
         return Optional.of(new JdbcExpression(
-                format("CAST(avg(%s) AS decimal(%s, %s))", context.rewriteExpression(argument).orElseThrow(), type.getPrecision(), type.getScale()),
+                format("CAST(avg(%s) AS decimal(%s, %s))", rewrittenArgument.expression(), type.getPrecision(), type.getScale()),
+                rewrittenArgument.parameters(),
                 columnHandle.getJdbcTypeHandle()));
     }
 }

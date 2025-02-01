@@ -15,16 +15,20 @@ package io.trino.sql.gen;
 
 import com.google.common.base.Joiner;
 import io.trino.annotation.UsedByGeneratedCode;
+import io.trino.metadata.InternalFunctionBundle;
 import io.trino.metadata.SqlScalarFunction;
-import io.trino.operator.scalar.AbstractTestFunctions;
 import io.trino.operator.scalar.ChoicesSpecializedSqlScalarFunction;
 import io.trino.operator.scalar.SpecializedSqlScalarFunction;
 import io.trino.spi.function.BoundSignature;
 import io.trino.spi.function.FunctionMetadata;
 import io.trino.spi.function.InvocationConvention.InvocationReturnConvention;
 import io.trino.spi.function.Signature;
-import org.testng.annotations.BeforeClass;
-import org.testng.annotations.Test;
+import io.trino.sql.query.QueryAssertions;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.TestInstance;
+import org.junit.jupiter.api.parallel.Execution;
 
 import java.lang.invoke.MethodHandle;
 import java.util.Optional;
@@ -38,30 +42,56 @@ import static io.trino.util.Reflection.methodHandle;
 import static java.lang.String.format;
 import static java.util.Collections.nCopies;
 import static java.util.stream.Collectors.toSet;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.TestInstance.Lifecycle.PER_CLASS;
+import static org.junit.jupiter.api.parallel.ExecutionMode.CONCURRENT;
 
+@TestInstance(PER_CLASS)
+@Execution(CONCURRENT)
 public class TestVarArgsToArrayAdapterGenerator
-        extends AbstractTestFunctions
 {
-    @BeforeClass
-    public void setUp()
+    private QueryAssertions assertions;
+
+    @BeforeAll
+    public void init()
     {
-        registerScalarFunction(VAR_ARGS_SUM);
+        assertions = new QueryAssertions();
+        assertions.addFunctions(new InternalFunctionBundle(VAR_ARGS_SUM));
+    }
+
+    @AfterAll
+    public void teardown()
+    {
+        assertions.close();
+        assertions = null;
     }
 
     @Test
     public void testArrayElements()
     {
-        assertFunction("var_args_sum()", INTEGER, 0);
-        assertFunction("var_args_sum(1)", INTEGER, 1);
-        assertFunction("var_args_sum(1, 2)", INTEGER, 3);
-        assertFunction("var_args_sum(null)", INTEGER, null);
-        assertFunction("var_args_sum(1, null, 2, null, 3)", INTEGER, null);
-        assertFunction("var_args_sum(1, 2, 3)", INTEGER, 6);
+        assertThat(assertions.function("var_args_sum"))
+                .isEqualTo(0);
+
+        assertThat(assertions.function("var_args_sum", "1"))
+                .isEqualTo(1);
+
+        assertThat(assertions.function("var_args_sum", "1", "2"))
+                .isEqualTo(3);
+
+        assertThat(assertions.function("var_args_sum", "null"))
+                .isNull(INTEGER);
+
+        assertThat(assertions.function("var_args_sum", "1", "null", "2", "null", "3"))
+                .isNull(INTEGER);
+
+        assertThat(assertions.function("var_args_sum", "1", "2", "3"))
+                .isEqualTo(6);
 
         // var_args_sum(1, 2, 3, ..., k)
         int k = 100;
-        int expectedSum = (1 + k) * k / 2;
-        assertFunction(format("var_args_sum(%s)", Joiner.on(",").join(IntStream.rangeClosed(1, k).boxed().collect(toSet()))), INTEGER, expectedSum);
+        String expression = format("var_args_sum(%s)", Joiner.on(",").join(IntStream.rangeClosed(1, k).boxed().collect(toSet())));
+        assertThat(assertions.expression(expression))
+                .isEqualTo((1 + k) * k / 2);
     }
 
     public static class TestVarArgsSum
@@ -74,9 +104,8 @@ public class TestVarArgsToArrayAdapterGenerator
 
         private TestVarArgsSum()
         {
-            super(FunctionMetadata.scalarBuilder()
+            super(FunctionMetadata.scalarBuilder("var_args_sum")
                     .signature(Signature.builder()
-                            .name("var_args_sum")
                             .returnType(INTEGER)
                             .argumentType(INTEGER)
                             .variableArity()
